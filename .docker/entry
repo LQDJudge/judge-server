@@ -6,7 +6,6 @@ export LANG=C.UTF-8
 export PYTHONIOENCODING=utf8
 
 cd /judge || exit
-/env/bin/pip3 install -q -e .
 
 case "$1" in
 run) command=(/env/bin/dmoj) ;;

@@ -46,7 +46,7 @@ DEFAULT_TEST_CASE_OUTPUT_PATTERN = r'^(?=.*?\.out|out).*?(?:(?:^|\W)(?P<batch>\d
 
 class BaseTestCase:
     config: ConfigNode
-    points: int
+    points: Union[float, int]
     problem: 'Problem'
 
 
@@ -210,8 +210,6 @@ class Problem:
 
         if 'custom_judge' in self.config:
             return cast(Type['BaseGrader'], graders.CustomGrader)
-        elif 'signature_grader' in self.config:
-            return graders.SignatureGrader
         elif 'interactive' in self.config:
             return graders.BridgedInteractiveGrader
         elif 'output_only' in self.config:
@@ -256,17 +254,7 @@ class Problem:
         if self.run_pretests_only and pretest_test_cases:
             return self._resolve_testcases(pretest_test_cases)
 
-        test_cases = self._resolve_testcases(self.config.test_cases)
-        if pretest_test_cases:
-            pretest_test_cases = self._resolve_testcases(pretest_test_cases)
-
-            # Hack: force short-circuiting behavior
-            for case in pretest_test_cases:
-                case.points = 0
-
-            test_cases = pretest_test_cases + test_cases
-
-        return test_cases
+        return self._resolve_testcases(self.config.test_cases)
 
 
 class ProblemDataManager(dict):
@@ -322,7 +310,7 @@ class ProblemConfig(ConfigNode):
                 doc,
                 defaults={
                     'wall_time_factor': 3,
-                    'output_prefix_length': 0 if 'signature_grader' in doc else 128,
+                    'output_prefix_length': 128,
                     'output_limit_length': 25165824,
                     'binary_data': False,
                     'short_circuit': True,

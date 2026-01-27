@@ -1,12 +1,15 @@
 import argparse
 import glob
+import hashlib
 import logging
 import os
 import ssl
+import tempfile
 from collections import defaultdict
 from fnmatch import fnmatch
 from operator import itemgetter
 from typing import Dict, Iterable, List, Optional, Set, Tuple
+import pickle
 
 import yaml
 
@@ -14,14 +17,15 @@ from dmoj.config import ConfigNode
 from dmoj.utils import pyyaml_patch  # noqa: F401, imported for side effect
 from dmoj.utils.ansi import print_ansi
 from dmoj.utils.glob_ext import find_glob_root
-from dmoj.utils.unicode import utf8text
+from dmoj.utils.unicode import utf8bytes, utf8text
 
 storage_namespaces: Dict[Optional[str], List[str]] = {}
 problem_globs: List[str] = []
 problem_watches: List[str] = []
+logger = logging.getLogger(__name__)
 env: ConfigNode = ConfigNode(
     defaults={
-        'selftest_time_limit': 10,  # 10 seconds
+        'selftest_time_limit': 60,  # 60 seconds
         'selftest_memory_limit': 131072,  # 128mb of RAM
         'generator_compiler_time_limit': 30,  # 30 seconds
         'generator_time_limit': 20,  # 20 seconds
@@ -29,7 +33,7 @@ env: ConfigNode = ConfigNode(
         'validator_compiler_time_limit': 30,  # 30 seconds
         'validator_time_limit': 20,  # 20 seconds
         'validator_memory_limit': 524288,  # 512mb of RAM
-        'compiler_time_limit': 10,  # Kill compiler after 10 seconds
+        'compiler_time_limit': 30,  # Kill compiler after 10 seconds
         'compiler_size_limit': 131072,  # Maximum allowable compiled file size, 128mb
         'compiler_output_character_limit': 65536,  # Number of characters allowed in compile output
         'compiled_binary_cache_dir': None,  # Location to store cached binaries, defaults to tempdir
@@ -75,6 +79,7 @@ cli_command: List[str] = []
 
 only_executors: Set[str] = set()
 exclude_executors: Set[str] = set()
+CACHE_FILE_NAME = 'cache.pkl'
 
 
 class StorageNamespaceCache:
@@ -82,6 +87,14 @@ class StorageNamespaceCache:
     problem_roots_cache: Optional[List[str]] = None
     supported_problems_cache: Optional[List[Tuple[str, float]]] = None
 
+    def __str__(self) -> str:
+        return (
+            f"StorageNamespaceCache(\n"
+            f"  problem_root_cache: {self.problem_root_cache},\n"
+            f"  problem_roots_cache: {self.problem_roots_cache},\n"
+            f"  supported_problems_cache: {self.supported_problems_cache}\n"
+            f")"
+        )
 
 _storage_namespace_cache: Dict[Optional[str], StorageNamespaceCache] = defaultdict(StorageNamespaceCache)
 
@@ -194,7 +207,6 @@ def load_env(cli: bool = False, testsuite: bool = False) -> None:  # pragma: no 
 
         problem_globs = ['/problems/**/']
 
-    print(api_listen)
     model_file = os.path.expanduser(args.config)
     try:
         with open(model_file) as init_file:
@@ -207,6 +219,11 @@ def load_env(cli: bool = False, testsuite: bool = False) -> None:  # pragma: no 
         env['id'] = args.judge_name
     elif 'DMOJ_JUDGE_NAME' in os.environ:
         env['id'] = os.environ['DMOJ_JUDGE_NAME']
+
+    if not is_docker and not cli and not testsuite:
+        folder_name = hashlib.sha384(utf8bytes(env['id'])).hexdigest()
+        env['tempdir'] = os.path.join(tempfile.gettempdir(), folder_name)
+        os.makedirs(env['tempdir'], exist_ok=True)
 
     if getattr(args, 'judge_key', None):
         env['key'] = args.judge_key
@@ -264,23 +281,47 @@ def get_problem_watches():
 
 
 def get_problem_root(problem_id, namespace=None) -> Optional[str]:
-    cache = _storage_namespace_cache[namespace]
-    cached_root = cache.problem_root_cache.get(problem_id)
-    if cached_root is None or not os.path.isfile(os.path.join(cached_root, 'init.yml')):
-        for root_dir in get_problem_roots(namespace):
-            problem_root_dir = os.path.join(root_dir, problem_id)
-            problem_config = os.path.join(problem_root_dir, 'init.yml')
-            if os.path.isfile(problem_config):
-                if problem_globs and not any(
-                    fnmatch(problem_config, os.path.join(problem_glob, 'init.yml')) for problem_glob in problem_globs
-                ):
-                    continue
-                cache.problem_root_cache[problem_id] = problem_root_dir
-                break
-        else:
-            return None
+    def _find_problem_root():
+        cache = _storage_namespace_cache[namespace]
+        cached_root = cache.problem_root_cache.get(problem_id)
 
-    return cache.problem_root_cache[problem_id]
+        if cached_root is None or not os.path.isfile(os.path.join(cached_root, 'init.yml')):
+            for root_dir in get_problem_roots(namespace):
+                problem_root_dir = os.path.join(root_dir, problem_id)
+                problem_config = os.path.join(problem_root_dir, 'init.yml')
+                if os.path.isfile(problem_config):
+                    if problem_globs and not any(
+                        fnmatch(problem_config, os.path.join(problem_glob, 'init.yml'))
+                        for problem_glob in problem_globs
+                    ):
+                        continue
+                    cache.problem_root_cache[problem_id] = problem_root_dir
+                    break
+            else:
+                return None
+        return cache.problem_root_cache[problem_id]
+
+    problem_root = _find_problem_root()
+    if problem_root:
+        return problem_root
+
+    # Recalculate the cache based on filecache
+    logger.error('root_dir is None. 1st retry. cache=%s', _storage_namespace_cache[namespace])
+    clear_storage_cache(namespace)
+    get_supported_problems_and_mtimes(force_update=False)
+    problem_root = _find_problem_root()
+    if problem_root:
+        return problem_root
+
+    # Recalculate the cache with scanning
+    logger.error('root_dir is None. 2nd retry. cache=%s', _storage_namespace_cache[namespace])
+    clear_storage_cache(namespace)
+    get_supported_problems_and_mtimes(force_update=True)
+    problem_root = _find_problem_root()
+    if problem_root:
+        return problem_root
+
+    return None
 
 
 def get_problem_roots(namespace=None) -> List[str]:
@@ -289,13 +330,16 @@ def get_problem_roots(namespace=None) -> List[str]:
     return cache.problem_roots_cache
 
 
+def clear_storage_cache(namespace=None) -> None:
+    _storage_namespace_cache[namespace] = StorageNamespaceCache()
+
+
 def get_supported_problems_and_mtimes(warnings: bool = True, force_update: bool = False) -> List[Tuple[str, float]]:
     """
     Fetches a list of all problems supported by this judge and their mtimes.
     :return:
         A list of all problems in tuple format: (problem id, mtime)
     """
-
     cache = _storage_namespace_cache[None]
 
     if cache.supported_problems_cache is not None and not force_update:
@@ -305,30 +349,76 @@ def get_supported_problems_and_mtimes(warnings: bool = True, force_update: bool 
     root_dirs = []
     root_dirs_set = set()
     problem_dirs: Dict[str, str] = {}
+
+    def process_problem_config(problem_config: str) -> Optional[Tuple[str, str, str, float]]:
+        if not os.access(problem_config, os.R_OK):
+            return None
+
+        problem_dir = os.path.dirname(problem_config)
+        problem = utf8text(os.path.basename(problem_dir))
+        root_dir = os.path.dirname(problem_dir)
+        mtime = os.path.getmtime(problem_dir)
+
+        return problem, problem_dir, root_dir, mtime
+
     for dir_glob in problem_globs:
+        cache_file: str = os.path.join(dir_glob.rstrip('*/'), CACHE_FILE_NAME)
+        current_problems = []
+        current_root_dirs = []
+
+        # Try to load from cache
+        if not force_update and os.path.exists(cache_file):
+            try:
+                with open(cache_file, 'rb') as f:
+                    cached_data = pickle.load(f)
+                    current_problems, current_root_dirs, cached_problem_dirs = cached_data
+                    problem_dirs.update(cached_problem_dirs)
+                    problems.extend(current_problems)
+                    for rd in current_root_dirs:
+                        if rd not in root_dirs_set:
+                            root_dirs.append(rd)
+                            root_dirs_set.add(rd)
+                    continue
+            except (IOError, pickle.PickleError, EOFError) as e:
+                print(f"Failed to read from cache file {cache_file}: {e}")
+
+        # Scan directory if cache fails or force_update is True
+        current_problem_dirs = {}
         for problem_config in glob.iglob(os.path.join(dir_glob, 'init.yml'), recursive=True):
-            if os.access(problem_config, os.R_OK):
-                problem_dir = os.path.dirname(problem_config)
-                problem = utf8text(os.path.basename(problem_dir))
+            result = process_problem_config(problem_config)
+            if not result:
+                continue
 
-                root_dir = os.path.dirname(problem_dir)
-                if root_dir not in root_dirs_set:
-                    # earlier-listed problem root takes priority
-                    root_dirs.append(root_dir)
-                    root_dirs_set.add(root_dir)
+            problem, problem_dir, root_dir, mtime = result
 
-                if problem in problem_dirs:
-                    if warnings:
-                        print_ansi(
-                            f'#ansi[Warning: duplicate problem {problem} found at {problem_dir},'
-                            f' ignoring in favour of {problem_dirs[problem]}](yellow)'
-                        )
-                else:
-                    problem_dirs[problem] = problem_dir
-                    problems.append((problem, os.path.getmtime(problem_dir)))
+            if root_dir not in root_dirs_set:
+                current_root_dirs.append(root_dir)
+                root_dirs_set.add(root_dir)
+
+            if problem in problem_dirs:
+                if warnings:
+                    print_ansi(
+                        f'#ansi[Warning: duplicate problem {problem} found at {problem_dir},'
+                        f' ignoring in favour of {problem_dirs[problem]}](yellow)'
+                    )
+            else:
+                problem_dirs[problem] = problem_dir
+                current_problem_dirs[problem] = problem_dir
+                current_problems.append((problem, mtime))
+
+        problems.extend(current_problems)
+        root_dirs.extend(current_root_dirs)
+
+        # Update cache file
+        try:
+            with open(cache_file, 'wb') as fw:
+                pickle.dump((current_problems, current_root_dirs, current_problem_dirs), fw)
+        except (IOError, pickle.PickleError) as e:
+            print(f"Failed to write cache file {cache_file}: {e}")
 
     cache.problem_roots_cache = root_dirs
     cache.supported_problems_cache = problems
+    cache.problem_root_cache = problem_dirs
 
     return problems
 
