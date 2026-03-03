@@ -2,10 +2,6 @@ FROM dmoj/runtimes-tier3
 
 ARG TAG=master
 
-RUN apt-get update && \
-    apt-get install -y python3-venv python3-pip && \
-    rm -rf /var/lib/apt/lists/*
-
 RUN mkdir /ScratchCLI && cd /ScratchCLI && \
     curl -L https://github.com/cuom1999/ScratchCLI/archive/master.tar.gz | tar -xz --strip-components=1 
 
