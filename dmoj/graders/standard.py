@@ -55,6 +55,20 @@ class StandardGrader(BaseGrader):
         result.feedback = check.feedback or result.feedback
         result.extended_feedback = check.extended_feedback or result.extended_feedback
 
+        # Capture preview data for generator-based cases (no in/out files in zip).
+        # Skip for zip-based cases since the web server reads those directly.
+        if not case.config['in'] or not case.config['out']:
+            try:
+                data = case.input_data()
+                result.input_preview = data[:512] if data else b''
+            except Exception:
+                result.input_preview = b''
+            try:
+                data = case.output_data()
+                result.output_preview = data[:512] if data else b''
+            except Exception:
+                result.output_preview = b''
+
         case.free_data()
 
         return result

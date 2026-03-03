@@ -1,0 +1,8 @@
+generator: generator.cpp
+validator:
+  source: validator.cpp
+  language: CPP17
+validate_expect: fail
+test_cases:
+- {generator_args: [0], points: 10}
+- {generator_args: [1001], points: 10}

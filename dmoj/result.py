@@ -79,7 +79,10 @@ class Result:
 
     @property
     def output(self) -> str:
-        return utf8text(self.proc_output[: self.case.output_prefix_length], 'replace')
+        result = utf8text(self.proc_output[: self.case.output_prefix_length], 'replace')
+        if len(self.proc_output) > self.case.output_prefix_length:
+            result += '...'
+        return result
 
     @classmethod
     def get_feedback_str(cls, error: bytes, process: 'TracedPopen', binary: 'BaseExecutor') -> str:

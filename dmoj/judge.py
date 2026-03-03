@@ -76,6 +76,7 @@ class Judge:
     def __init__(self, packet_manager: packet.PacketManager) -> None:
         self.packet_manager = packet_manager
         self.current_judge_worker: Optional[JudgeWorker] = None
+        self._current_validate_id: Optional[str] = None
         self._grading_lock = threading.Lock()
 
         self.updater_exit = False
@@ -264,6 +265,65 @@ class Judge:
             # These calls are idempotent, so it doesn't matter if we raced and the worker has exited already.
             worker.request_abort_grading()
             worker.wait_with_timeout()
+
+    def begin_validation(self, validate_id: str, problem_id: str, report=logger.info) -> None:
+        self._grading_lock.acquire()
+
+        report(
+            ansi_style(
+                'Start validating #ansi[%s](yellow) [%s]...' % (problem_id, validate_id)
+            )
+        )
+
+        self._current_validate_id = validate_id
+        thread = threading.Thread(
+            target=self._validation_thread_main,
+            args=(validate_id, problem_id, report),
+            daemon=True,
+        )
+        try:
+            thread.start()
+        except Exception:
+            self._current_validate_id = None
+            self._grading_lock.release()
+            raise
+
+    def _validation_thread_main(self, validate_id: str, problem_id: str, report) -> None:
+        from dmoj.commands.validate import validate_problem_cases
+
+        try:
+            for event_type, data in validate_problem_cases(problem_id):
+                if event_type == 'begin':
+                    self.packet_manager.validate_begin_packet(validate_id, data['total_cases'])
+                elif event_type == 'case':
+                    self.packet_manager.validate_case_packet(
+                        validate_id, data['case'], data['batch'],
+                        data['status'], data['feedback'],
+                    )
+                elif event_type == 'end':
+                    self.packet_manager.validate_end_packet(
+                        validate_id, data['passed'], data['total'], data['failed'],
+                    )
+                elif event_type == 'skip':
+                    pass
+                elif event_type in ('error', 'compile-error'):
+                    self.packet_manager.validate_error_packet(
+                        validate_id, data.get('error', 'Unknown error'),
+                    )
+            report(
+                ansi_style(
+                    'Done validating #ansi[%s](yellow) [%s].\n' % (problem_id, validate_id)
+                )
+            )
+        except Exception:
+            logger.exception('Unhandled exception during validation')
+            try:
+                self.packet_manager.validate_error_packet(validate_id, traceback.format_exc())
+            except Exception:
+                pass
+        finally:
+            self._current_validate_id = None
+            self._grading_lock.release()
 
     def listen(self) -> None:
         """

@@ -186,6 +186,18 @@ class PacketManager:
         self.judge.abort_grading()
         sys.exit(0)
 
+    PREVIEW_MAX_BYTES = 512
+
+    @staticmethod
+    def _get_result_preview(result, field):
+        try:
+            data = result.input_preview if field == 'input' else result.output_preview
+            if not data:
+                return ''
+            return utf8text(data, 'replace')
+        except AttributeError:
+            return ''
+
     def _flush_testcase_queue(self):
         with self._testcase_queue_lock:
             if not self._testcase_queue:
@@ -209,8 +221,10 @@ class PacketManager:
                             'voluntary-context-switches': result.context_switches[0],
                             'involuntary-context-switches': result.context_switches[1],
                             'runtime-version': result.runtime_version,
+                            'input': input_preview,
+                            'expected-output': output_preview,
                         }
-                        for position, result in self._testcase_queue
+                        for position, result, input_preview, output_preview in self._testcase_queue
                     ],
                 }
             )
@@ -278,6 +292,11 @@ class PacketManager:
             )
         elif name == 'terminate-submission':
             self.judge.abort_grading()
+        elif name == 'validate-request':
+            self.judge.begin_validation(
+                validate_id=packet['validate-id'],
+                problem_id=packet['problem-id'],
+            )
         elif name == 'disconnect':
             log.info('Received disconnect request, shutting down...')
             self.disconnect()
@@ -315,8 +334,10 @@ class PacketManager:
             result.points,
             result.total_points,
         )
+        input_preview = self._get_result_preview(result, 'input')
+        output_preview = self._get_result_preview(result, 'output')
         with self._testcase_queue_lock:
-            self._testcase_queue.append((position, result))
+            self._testcase_queue.append((position, result, input_preview, output_preview))
 
     def compile_error_packet(self, message: str):
         log.debug('Compile error: %d', self.judge.current_submission.id)
@@ -377,3 +398,36 @@ class PacketManager:
 
     def submission_acknowledged_packet(self, sub_id: int):
         self._send_packet({'name': 'submission-acknowledged', 'submission-id': sub_id})
+
+    def validate_begin_packet(self, validate_id: str, total_cases: int):
+        self._send_packet({
+            'name': 'validate-begin',
+            'validate-id': validate_id,
+            'total-cases': total_cases,
+        })
+
+    def validate_case_packet(self, validate_id: str, case: int, batch: Optional[int], status: str, feedback: str):
+        self._send_packet({
+            'name': 'validate-case',
+            'validate-id': validate_id,
+            'case': case,
+            'batch': batch,
+            'status': status,
+            'feedback': feedback,
+        })
+
+    def validate_end_packet(self, validate_id: str, passed: bool, total: int, failed: int):
+        self._send_packet({
+            'name': 'validate-end',
+            'validate-id': validate_id,
+            'passed': passed,
+            'total': total,
+            'failed': failed,
+        })
+
+    def validate_error_packet(self, validate_id: str, error: str):
+        self._send_packet({
+            'name': 'validate-error',
+            'validate-id': validate_id,
+            'error': error,
+        })

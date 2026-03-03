@@ -3,8 +3,7 @@ import shlex
 import subprocess
 from itertools import groupby
 from operator import itemgetter
-from typing import List, Optional, Tuple
-
+from typing import Generator, List, Optional, Tuple
 
 from dmoj import executors
 from dmoj.commands.base_command import Command
@@ -19,6 +18,141 @@ from dmoj.utils.unicode import utf8text
 
 
 all_executors = executors.executors
+
+
+def validate_problem_cases(problem_id: str) -> Generator[Tuple[str, dict], None, None]:
+    """Generator yielding validation events for a problem.
+
+    Yields tuples of (event_type, data_dict):
+      ('begin', {'total_cases': int})
+      ('case', {'case': int, 'batch': int|None, 'status': str, 'feedback': str})
+      ('end', {'passed': bool, 'total': int, 'failed': int})
+      ('error', {'error': str})
+      ('compile-error', {'error': str})
+      ('skip', {'reason': str})
+    """
+    problem_root = get_problem_root(problem_id)
+    if problem_root is None:
+        yield ('skip', {'reason': f'Problem {problem_id} not found'})
+        return
+
+    config = ProblemConfig(ProblemDataManager(problem_root))
+    if not config.validator:
+        yield ('skip', {'reason': 'No validator found'})
+        return
+
+    validator_config = config['validator']
+    language = validator_config['language']
+    if language not in all_executors:
+        yield ('skip', {'reason': 'Language not supported'})
+        return
+
+    time_limit = validator_config.time_limit or env.validator_time_limit
+    memory_limit = validator_config.memory_limit or env.validator_memory_limit
+    compiler_time_limit = validator_config.get('compiler_time_limit', env.validator_compiler_time_limit)
+    read_feedback_from = validator_config.get('read_feedback_from', 'stderr')
+    if read_feedback_from not in ('stdout', 'stderr'):
+        yield ('error', {'error': 'Feedback option should be (stdout, stderr)'})
+        return
+
+    if isinstance(validator_config.source, str):
+        filenames = [validator_config.source]
+    elif isinstance(validator_config.source.unwrap(), list):
+        filenames = list(validator_config.source.unwrap())
+    else:
+        yield ('error', {'error': 'No validator source found'})
+        return
+
+    filenames = [os.path.abspath(os.path.join(problem_root, name)) for name in filenames]
+    try:
+        executor = compile_with_auxiliary_files(
+            None, filenames, lang=language, compiler_time_limit=compiler_time_limit
+        )
+    except CompileError as compilation_error:
+        yield ('compile-error', {'error': compilation_error.message.rstrip()})
+        return
+
+    problem = Problem(problem_id, time_limit, memory_limit, {})
+
+    flattened_cases: List[Tuple[Optional[int], TestCase]] = []
+    batch_number = 0
+    for case in problem.cases():
+        if isinstance(case, BatchedTestCase):
+            batch_number += 1
+            for batched_case in case.batched_cases:
+                assert isinstance(batched_case, TestCase)
+                flattened_cases.append((batch_number, batched_case))
+        else:
+            assert isinstance(case, TestCase)
+            flattened_cases.append((None, case))
+
+    contrib_type = validator_config.get('type', 'default')
+    if contrib_type not in contrib_modules:
+        yield ('error', {'error': f'{contrib_type} is not a valid contrib module'})
+        return
+
+    args_format_string = (
+        validator_config.args_format_string
+        or contrib_modules[contrib_type].ContribModule.get_validator_args_format_string()
+    )
+
+    total_cases = len(flattened_cases)
+    yield ('begin', {'total_cases': total_cases})
+
+    case_number = 0
+    failed_count = 0
+    for batch_number, cases in groupby(flattened_cases, key=itemgetter(0)):
+        for _, case in cases:
+            case_number += 1
+
+            result = Result(case)
+            input = case.input_data()
+
+            validator_args = shlex.split(args_format_string.format(batch_no=case.batch, case_no=case.position))
+            process = executor.launch(
+                *validator_args,
+                time=time_limit,
+                memory=memory_limit,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                wall_time=case.config.wall_time_factor * time_limit,
+            )
+            try:
+                proc_output, proc_error = process.communicate(
+                    input, outlimit=case.config.output_limit_length, errlimit=1048576
+                )
+            except OutputLimitExceeded:
+                proc_error = b''
+                process.kill()
+            finally:
+                process.wait()
+
+            executor.populate_result(proc_error, result, process)
+            feedback = (
+                utf8text({'stdout': proc_output, 'stderr': proc_error}[read_feedback_from].rstrip())
+                or result.feedback
+            )
+            code = result.readable_codes()[0]
+            if code == 'AC':
+                code = 'OK'
+
+            status = code
+            if result.result_flag:
+                failed_count += 1
+
+            yield ('case', {
+                'case': case_number,
+                'batch': batch_number,
+                'status': status,
+                'feedback': feedback or '',
+            })
+
+    yield ('end', {
+        'passed': failed_count == 0,
+        'total': total_cases,
+        'failed': failed_count,
+    })
 
 
 class ValidateCommand(Command):
@@ -61,118 +195,34 @@ class ValidateCommand(Command):
     def validate_problem(self, problem_id: str) -> bool:
         print_ansi(f'Validating problem #ansi[{problem_id}](cyan|bold)...')
 
-        problem_root = get_problem_root(problem_id)
-        if problem_root is None:
-            print_ansi(f'\t#ansi[Skipped](magenta|bold) - Problem [{problem_id}](cyan|bold) not found.')
-            return True
-
-        config = ProblemConfig(ProblemDataManager(problem_root))
-        if not config.validator:
-            print_ansi('\t#ansi[Skipped](magenta|bold) - No validator found.')
-            return True
-
-        validator_config = config['validator']
-        language = validator_config['language']
-        if language not in all_executors:
-            print_ansi('\t\t#ansi[Skipped](magenta|bold) - Language not supported.')
-            return True
-
-        time_limit = validator_config.time_limit or env.validator_time_limit
-        memory_limit = validator_config.memory_limit or env.validator_memory_limit
-        compiler_time_limit = validator_config.get('compiler_time_limit', env.validator_compiler_time_limit)
-        read_feedback_from = validator_config.get('read_feedback_from', 'stderr')
-        if read_feedback_from not in ('stdout', 'stderr'):
-            print_ansi('\t\t#ansi[Failed](red|bold) - Feedback option should be (stdout, stderr).')
-            return False
-
-        if isinstance(validator_config.source, str):
-            filenames = [validator_config.source]
-        elif isinstance(validator_config.source.unwrap(), list):
-            filenames = list(validator_config.source.unwrap())
-        else:
-            print_ansi('\t#ansi[Failed](red|bold) - No validator found.')
-            return False
-
-        filenames = [os.path.abspath(os.path.join(problem_root, name)) for name in filenames]
-        try:
-            executor = compile_with_auxiliary_files(
-                None, filenames, lang=language, compiler_time_limit=compiler_time_limit
-            )
-        except CompileError as compilation_error:
-            print_ansi('#ansi[Failed compiling validator!](red|bold)')
-            print(compilation_error.message.rstrip())
-            return False
-
-        problem = Problem(problem_id, time_limit, memory_limit, {})
-
-        flattened_cases: List[Tuple[Optional[int], TestCase]] = []
-        batch_number = 0
-        for case in problem.cases():
-            if isinstance(case, BatchedTestCase):
-                batch_number += 1
-                for batched_case in case.batched_cases:
-                    assert isinstance(batched_case, TestCase)
-                    flattened_cases.append((batch_number, batched_case))
-            else:
-                assert isinstance(case, TestCase)
-                flattened_cases.append((None, case))
-
-        contrib_type = validator_config.get('type', 'default')
-        if contrib_type not in contrib_modules:
-            print_ansi(f'#ansi[{contrib_type} is not a valid contrib module!](red|bold)')
-            return False
-
-        args_format_string = (
-            validator_config.args_format_string
-            or contrib_modules[contrib_type].ContribModule.get_validator_args_format_string()
-        )
-
-        case_number = 0
         ok = True
-        for batch_number, cases in groupby(flattened_cases, key=itemgetter(0)):
-            if batch_number:
-                print_ansi(f'#ansi[Batch #{batch_number}](yellow|bold)')
-            for _, case in cases:
-                case_number += 1
-
-                result = Result(case)
-                input = case.input_data()
-
-                validator_args = shlex.split(args_format_string.format(batch_no=case.batch, case_no=case.position))
-                process = executor.launch(
-                    *validator_args,
-                    time=time_limit,
-                    memory=memory_limit,
-                    stdin=subprocess.PIPE,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    wall_time=case.config.wall_time_factor * time_limit,
-                )
-                try:
-                    proc_output, proc_error = process.communicate(
-                        input, outlimit=case.config.output_limit_length, errlimit=1048576
-                    )
-                except OutputLimitExceeded:
-                    proc_error = b''
-                    process.kill()
-                finally:
-                    process.wait()
-
-                executor.populate_result(proc_error, result, process)
-                feedback = (
-                    utf8text({'stdout': proc_output, 'stderr': proc_error}[read_feedback_from].rstrip())
-                    or result.feedback
-                )
-                code = result.readable_codes()[0]
-                code_colour = Result.COLORS_BYID[code]
-                if code == 'AC':
-                    code = 'OK'  # this is less confusing
+        for event_type, data in validate_problem_cases(problem_id):
+            if event_type == 'skip':
+                print_ansi(f'\t#ansi[Skipped](magenta|bold) - {data["reason"]}')
+                return True
+            elif event_type == 'compile-error':
+                print_ansi('#ansi[Failed compiling validator!](red|bold)')
+                print(data['error'])
+                return False
+            elif event_type == 'error':
+                print_ansi(f'\t#ansi[Failed](red|bold) - {data["error"]}')
+                return False
+            elif event_type == 'begin':
+                pass
+            elif event_type == 'case':
+                code = data['status']
+                code_colour = Result.COLORS_BYID.get(code, Result.COLORS_BYID.get('WA', ''))
+                if code == 'OK':
+                    code_colour = Result.COLORS_BYID.get('AC', 'green')
                 colored_code = f'#ansi[{code}]({code_colour}|bold)'
-                colored_feedback = f'(#ansi[{utf8text(feedback)}](|underline))' if feedback else ''
-                case_padding = '  ' if batch_number is not None else ''
-                print_ansi(f'{case_padding}Test case {case_number:2d} {colored_code:3s} {colored_feedback}')
+                feedback = data['feedback']
+                colored_feedback = f'(#ansi[{feedback}](|underline))' if feedback else ''
+                case_padding = '  ' if data['batch'] is not None else ''
+                print_ansi(f'{case_padding}Test case {data["case"]:2d} {colored_code:3s} {colored_feedback}')
 
-                if result.result_flag:
+                if code != 'OK':
                     ok = False
+            elif event_type == 'end':
+                ok = data['passed']
 
         return ok

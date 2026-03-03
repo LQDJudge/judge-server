@@ -134,6 +134,18 @@ class TestManager:
     def submission_acknowledged_packet(self, sub_id):
         pass
 
+    def validate_begin_packet(self, validate_id, total_cases):
+        pass
+
+    def validate_case_packet(self, validate_id, case, batch, status, feedback):
+        pass
+
+    def validate_end_packet(self, validate_id, passed, total, failed):
+        pass
+
+    def validate_error_packet(self, validate_id, error):
+        pass
+
 
 class Tester:
     all_codes = {'AC', 'IE', 'TLE', 'MLE', 'OLE', 'RTE', 'IR', 'WA', 'CE', 'SC'}
@@ -214,7 +226,42 @@ class Tester:
                 if i != len(dirs) - 1:
                     self.output()
 
+        fails += self.run_validation(problem)
+
         return fails
+
+    def run_validation(self, problem):
+        from dmoj.commands.validate import validate_problem_cases
+        from dmoj.problem import ProblemConfig, ProblemDataManager
+
+        root = get_problem_root(problem)
+        config = ProblemConfig(ProblemDataManager(root))
+
+        if not config.validator:
+            return 0
+
+        expect_pass = config.get('validate_expect', 'pass') == 'pass'
+
+        self.output(ansi_style('\tValidating test data for #ansi[%s](cyan|bold)...') % problem)
+
+        ok = True
+        for event_type, data in validate_problem_cases(problem):
+            if event_type == 'case':
+                if data['status'] != 'OK':
+                    ok = False
+            elif event_type in ('error', 'compile-error'):
+                ok = False
+
+        if ok == expect_pass:
+            self.output(ansi_style('\tValidation: #ansi[Success](green|bold)'))
+            return 0
+        else:
+            expected = 'pass' if expect_pass else 'fail'
+            actual = 'passed' if ok else 'failed'
+            self.output(ansi_style(
+                '\tValidation: #ansi[Failed](red|bold) (expected %s, but %s)' % (expected, actual)
+            ))
+            return 1
 
     def run_test_case(self, problem, case, case_dir):
         config = {}
@@ -338,6 +385,12 @@ class Tester:
 
 def main():
     judgeenv.load_env(cli=True, testsuite=True)
+
+    # Remove stale problem cache so new test problems are always discovered
+    for dir_glob in judgeenv.problem_globs:
+        cache_file = os.path.join(dir_glob.rstrip('*/'), judgeenv.CACHE_FILE_NAME)
+        if os.path.exists(cache_file):
+            os.remove(cache_file)
 
     logging.basicConfig(
         filename=judgeenv.log_file, level=judgeenv.log_level, format='%(levelname)s %(asctime)s %(module)s %(message)s'
