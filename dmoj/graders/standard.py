@@ -26,7 +26,8 @@ class StandardGrader(BaseGrader):
         execution_time_upper = time_limit + 0.5
         retry_count = 3
         while retry_count > 0:
-            input_file = case.input_data_io()  # Get fresh IO for each attempt
+            input_file = case.input_data_io()
+            input_file.seek(0)  # Reset position in case previous TLE attempt consumed the input
             self._launch_process(case, input_file)
             error = self._interact_with_process(case, result)
             process = self._current_proc
