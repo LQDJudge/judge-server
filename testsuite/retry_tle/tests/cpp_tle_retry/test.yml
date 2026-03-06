@@ -1,0 +1,5 @@
+language: CPP17
+time: 1
+memory: 65536
+source: tle_retry.cpp
+expect: TLE
