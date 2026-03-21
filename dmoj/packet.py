@@ -297,6 +297,9 @@ class PacketManager:
                 validate_id=packet['validate-id'],
                 problem_id=packet['problem-id'],
             )
+        elif name == 'update-problems':
+            log.info('Received update-problems request, rescanning...')
+            self.judge.update_problems()
         elif name == 'disconnect':
             log.info('Received disconnect request, shutting down...')
             self.disconnect()
