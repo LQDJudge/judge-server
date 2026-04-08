@@ -68,6 +68,10 @@ class JavaExecutor(SingleDigitVersionMixin, CompiledExecutor):
         'thr_set_name',
         'getcpu',
     ]
+    compiler_syscalls = [
+        'getresuid',
+        'getresgid',
+    ]
 
     jvm_regex: Optional[str] = None
     _class_name: Optional[str]

@@ -30,5 +30,6 @@ for item in "${files[@]}"; {
   eval "g++ -std=c++14 $FLAGS -o $GCH_DIR/cpp14 $item"
   eval "g++ -std=c++17 $FLAGS -o $GCH_DIR/cpp17 $item"
   eval "g++ -std=c++20 $FLAGS -o $GCH_DIR/cpp20 $item"
+  eval "g++ -std=c++23 $FLAGS -o $GCH_DIR/cpp23 $item"
   eval "g++ -std=c++14 -pipe -O2 -s -static -DTHEMIS -o $GCH_DIR/cppthemis $item"
 }
