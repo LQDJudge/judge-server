@@ -525,6 +525,11 @@ class TestCase(BaseTestCase):
         if self.config['out']:
             params['output_name'] = self.config['out']
 
+        # Always pass the contest pretest mode through to the checker.
+        # All built-in checkers accept **kwargs; custom user-uploaded checkers
+        # MUST also accept **kwargs to be compatible.
+        params['pretests_only'] = self.problem.run_pretests_only
+
         return partial(checker.check, **params)
 
     def free_data(self) -> None:

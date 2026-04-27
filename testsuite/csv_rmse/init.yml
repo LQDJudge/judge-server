@@ -1,0 +1,11 @@
+output_only: true
+test_cases:
+- in: 1.in
+  out: 1.out
+  points: 100
+checker:
+  name: csv_rmse
+  args:
+    has_header: true
+    id_column: id
+    label_column: y

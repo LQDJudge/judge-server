@@ -1,0 +1,6 @@
+language: PY3
+time: 2
+memory: 65536
+source: sub.py
+expect: WA
+feedback: RMSE = 1.000000
