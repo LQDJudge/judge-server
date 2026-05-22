@@ -1,4 +1,5 @@
 #!/usr/bin/python
+import copy
 import logging
 import multiprocessing
 import os
@@ -590,13 +591,17 @@ class JudgeWorker:
                         if case.points != 0 and case_cache_key != (None, None):
                             judged_results[case_cache_key] = result
                     else:
-                        # TODO: this is a bit of a hack, but it's the best we can do for now
-
-                        # Cache hit, now we need to change the points of the result
-                        # new_points = new_case_points * old_points / old_case_points
-
-                        # result.case.points will always positive, since we only cache cases that have non-zero points
-                        result.points = case.points * result.points / result.case.points
+                        # Cache hit. Make a shallow copy and rescale on the
+                        # copy so the cached result is never mutated.
+                        # Previously we did `result.case = case` directly,
+                        # which corrupted result.case.points for subsequent
+                        # hits (when the new case has points=0, the next
+                        # hit would divide by zero at line 599 below).
+                        cached_result = result
+                        result = copy.copy(cached_result)
+                        # cached_result.case.points is the originally-cached
+                        # case's points, guaranteed non-zero by line 590.
+                        result.points = case.points * cached_result.points / cached_result.case.points
                         result.case = case
 
                     # If the submission was killed due to a user-initiated abort, any result is meaningless.
