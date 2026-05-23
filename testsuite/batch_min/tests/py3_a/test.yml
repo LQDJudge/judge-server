@@ -1,0 +1,10 @@
+language: PY3
+time: 5
+memory: 65536
+source: sol.py
+# batch1 (1 case WA): 0pt; batch2 (1 case AC): 1pt;
+# batch3 (2 cases AC,AC): 1pt; batch4 (2 cases WA,AC): 0pt → total 2/4 → WA
+expect: WA
+cases: [WA, AC, AC, AC, WA, AC]
+# Only check the cases that cover clear-cut semantics; py3_b covers per-case scores
+score_cases: {1: 0, 2: 1}

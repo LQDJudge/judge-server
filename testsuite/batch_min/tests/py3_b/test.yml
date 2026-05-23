@@ -1,0 +1,12 @@
+language: PY3
+time: 5
+memory: 65536
+source: sol.py
+# batch1: WA → 0pt; batch2: AC → 1pt; batch3: AC,AC → 1pt; batch4: WA,AC → 0pt
+# Overall: 2pt out of 4 → WA
+expect: WA
+cases: [WA, AC, AC, AC, WA, AC]
+# Key check: in the mixed batch (cases 5+6), the judge must yield individual
+# scores — not the uniform min_fraction (which would make case6=0 too).
+# case5 (WA) → 0/0.5;  case6 (AC) → 0.5/0.5 i.e. score = 0.5
+score_cases: {1: 0, 2: 1, 5: 0, 6: 0.5}
