@@ -331,6 +331,15 @@ class BatchedTestCase(BaseTestCase):
         self.points = config.points
         self.dependencies = config.dependencies
         self.batched_cases = cases
+        # score_type: how per-case scores aggregate into a batch score.
+        #   "sum" (default): sum of per-case checker scores × case weights.
+        #   "min": score = min(case_fractions) × batch_points.
+        score_type = config.raw_config.get('score_type', 'sum')
+        if score_type not in ('sum', 'min'):
+            raise InvalidInitException(
+                f'unknown score_type {score_type!r} — must be sum or min'
+            )
+        self.score_type: str = score_type
         if any(isinstance(case, BatchedTestCase) for case in self.batched_cases):
             raise InvalidInitException('nested batches')
         self.problem = problem

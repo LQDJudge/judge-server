@@ -548,10 +548,13 @@ class JudgeWorker:
         batch_number = 0
         batch_dependencies: List[Set[int]] = []
         batch_points: Dict[int, Union[int, float]] = {}
+        batch_score_types: Dict[int, str] = {}  # "sum" | "min"
         for case in problem.cases():
             if isinstance(case, BatchedTestCase):
                 batch_number += 1
                 batch_points[batch_number] = case.points
+                score_type = getattr(case, 'score_type', 'sum')
+                batch_score_types[batch_number] = score_type
                 sum_points = sum([i.points for i in case.batched_cases]) or 1
                 for batched_case in case.batched_cases:
                     batched_case.points = batched_case.points / sum_points * case.points
@@ -576,12 +579,21 @@ class JudgeWorker:
                 # only if this batch's own dependencies failed.
                 is_short_circuiting = passed_batches & dependencies != dependencies
 
+            # "min" runs all cases and scores = min(case_fractions) × batch_pts.
+            # "sum" (default) uses existing per-case rescaled points and short-circuit.
+            score_type = batch_score_types.get(batch_number, 'sum') if batch_number else 'sum'
+            is_min_batch = score_type == 'min'
+
+            # For min batches: buffer (case_number, result, case.points) so we can
+            # adjust result.points after seeing all cases.
+            min_batch_buffer: List[tuple] = []
+
             for _, case in cases:
                 case_number += 1
                 assert isinstance(case, TestCase)
 
-                # Stop grading if we're short circuiting
-                if is_short_circuiting:
+                # Stop grading if we're short circuiting (sum mode only — min runs all)
+                if is_short_circuiting and not is_min_batch:
                     result = Result(case, result_flag=Result.SC)
                 else:
                     case_cache_key = (case.config['in'], case.config['out'])
@@ -589,24 +601,14 @@ class JudgeWorker:
 
                     if result is None:
                         result = self.grader.grade(case)
-                        # only cache on case has positive points
                         if case.points != 0 and case_cache_key != (None, None):
                             judged_results[case_cache_key] = result
                     else:
-                        # Cache hit. Make a shallow copy and rescale on the
-                        # copy so the cached result is never mutated.
-                        # Previously we did `result.case = case` directly,
-                        # which corrupted result.case.points for subsequent
-                        # hits (when the new case has points=0, the next
-                        # hit would divide by zero at line 599 below).
                         cached_result = result
                         result = copy.copy(cached_result)
-                        # cached_result.case.points is the originally-cached
-                        # case's points, guaranteed non-zero by line 590.
                         result.points = case.points * cached_result.points / cached_result.case.points
                         result.case = case
 
-                    # If the submission was killed due to a user-initiated abort, any result is meaningless.
                     if self._abort_requested:
                         yield IPC.GRADING_ABORTED, ()
                         return
@@ -615,17 +617,35 @@ class JudgeWorker:
                         is_short_circuiting |= not case.points
                         batch_failed = True
 
-                # Legacy hack: we need to allow graders to read and write `proc_output` on the `Result` object, but the
-                # judge controller only cares about the trimmed output, and shouldn't waste memory buffering the full
-                # output. So, we trim it here so we don't run out of memory in the controller.
                 result.proc_output = utf8bytes(result.output)
-                yield IPC.RESULT, (batch_number, case_number, result)
+
+                if is_min_batch:
+                    # Buffer for post-processing; don't yield yet.
+                    min_batch_buffer.append((case_number, result, case.points))
+                else:
+                    yield IPC.RESULT, (batch_number, case_number, result)
 
             if batch_number:
-                if not batch_failed:
-                    passed_batches.add(batch_number)
-                elif batch_points.get(batch_number, 0):
-                    is_short_circuiting = False
+                if is_min_batch and min_batch_buffer:
+                    # Yield each case with its original per-case checker score so
+                    # the controller can display individual results. The controller
+                    # is responsible for computing the batch total as
+                    # min(fractions) × batch_pts rather than summing case points.
+                    fractions = [
+                        r.points / cp if cp else 0.0
+                        for _, r, cp in min_batch_buffer
+                    ]
+                    min_fraction = min(fractions) if fractions else 0.0
+                    for cn, r, cp in min_batch_buffer:
+                        # r.points keeps the individual checker score (not min-adjusted)
+                        yield IPC.RESULT, (batch_number, cn, r)
+                    if min_fraction > 0:
+                        passed_batches.add(batch_number)
+                else:
+                    if not batch_failed:
+                        passed_batches.add(batch_number)
+                    elif batch_points.get(batch_number, 0):
+                        is_short_circuiting = False
                 yield IPC.BATCH_END, (batch_number,)
                 is_short_circuiting &= is_short_circuiting_enabled
 

@@ -1,0 +1,10 @@
+language: PY3
+time: 5
+memory: 65536
+source: sol.py
+# sum mode: WA on case1 with weight=0.5 does NOT short-circuit (non-zero pts)
+# case1=WA, case2=AC, case3=AC, case4=AC
+expect: WA
+cases: [WA, AC, AC, AC]
+# batch1: sum(WA=0, AC=0.5) = 0.5pts; batch2: sum(AC=0.5, AC=0.5) = 1pt
+score_cases: {1: 0, 2: 0.5, 3: 0.5, 4: 0.5}

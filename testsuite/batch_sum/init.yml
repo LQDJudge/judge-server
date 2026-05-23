@@ -1,0 +1,12 @@
+points: 2
+test_cases:
+  # sum batch equal weights: first WA (b), second AC (a) → sum = 0.5 pts
+  - batched:
+    - {out: b.out, points: 1}
+    - {out: a.out, points: 1}
+    points: 1
+  # sum batch: both AC → sum = 1 pt
+  - batched:
+    - {out: a.out, points: 1}
+    - {out: a.out, points: 1}
+    points: 1

@@ -1,0 +1,26 @@
+points: 4
+test_cases:
+  # min batch, 1 case WA → min=0 → 0pt
+  - batched:
+    - {out: b.out, points: 1}
+    points: 1
+    score_type: min
+  # min batch, 1 case AC → min=1 → 1pt
+  - batched:
+    - {out: a.out, points: 1}
+    points: 1
+    score_type: min
+  # min batch, 2 cases both AC → min(1,1)=1 → 1pt (each case 0.5)
+  - batched:
+    - {out: a.out, points: 1}
+    - {out: a.out, points: 1}
+    points: 1
+    score_type: min
+  # min batch, 2 cases WA+AC → min(0,1)=0 → batch=0pt.
+  # But each case keeps its own score: case1=0 (WA), case2=0.5 (AC, 0.5 of 1pt).
+  # This tests that the judge yields individual scores, not min-adjusted uniform values.
+  - batched:
+    - {out: b.out, points: 1}
+    - {out: a.out, points: 1}
+    points: 1
+    score_type: min
