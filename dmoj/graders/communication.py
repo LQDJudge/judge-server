@@ -150,8 +150,12 @@ class CommunicationGrader(StandardGrader):
             stdin_fd = os.open(self._fifo_manager_to_user[i], STDIN_FD_FLAGS)
             stdout_fd = os.open(self._fifo_user_to_manager[i], STDOUT_FD_FLAGS, STDOUT_FD_MODE)
 
+            # Pass the per-process index as argv[1] (CMS Communication
+            # convention). IOI stubs use this to decide which role they
+            # play (e.g. encoder vs decoder for two-process tasks).
             self._user_procs.append(
                 self.binary.launch(
+                    str(i),
                     time=self.problem.time_limit,
                     memory=self.problem.memory_limit,
                     symlinks=case.config.symlinks,

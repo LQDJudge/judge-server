@@ -20,6 +20,11 @@ curl -L https://raw.githubusercontent.com/cuom1999/testlib/customized-testlib/te
 sed -i '/^#include <cstdio>/a#include <cstdint>' /usr/include/testlib_modified.h
 g++ -std=c++17 $FLAGS /usr/include/testlib_modified.h
 
+# Download and precompile testlib_ioi.h (IOI-style testlib with readSecret, _sv, _pv, registerChecker, HaltListener)
+curl -L https://raw.githubusercontent.com/cuom1999/testlib/customized-testlib/testlib_ioi.h -o /usr/include/testlib_ioi.h
+sed -i '/^#include <cstdio>/a#include <cstdint>' /usr/include/testlib_ioi.h
+g++ -std=c++20 $FLAGS /usr/include/testlib_ioi.h
+
 # Precompile bits/stdc++.h
 IFS=$'\n' files=( $(find /usr/include/ -name stdc++.h) );
 for item in "${files[@]}"; {
