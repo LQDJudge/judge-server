@@ -571,8 +571,10 @@ class JudgeWorker:
             if batch_number:
                 yield IPC.BATCH_BEGIN, (batch_number,)
                 dependencies = batch_dependencies[batch_number - 1]  # List is zero-indexed
-                if passed_batches & dependencies != dependencies:
-                    is_short_circuiting = True
+                # A new batch is independent of state inherited from the
+                # previous (standalone or batched) cases: short-circuit if and
+                # only if this batch's own dependencies failed.
+                is_short_circuiting = passed_batches & dependencies != dependencies
 
             for _, case in cases:
                 case_number += 1
