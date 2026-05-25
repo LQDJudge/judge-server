@@ -588,12 +588,18 @@ class JudgeWorker:
             # adjust result.points after seeing all cases.
             min_batch_buffer: List[tuple] = []
 
+            # Once any case in a min batch earns fraction 0, min is locked at 0
+            # for the whole batch, so there's no point grading the rest.
+            min_batch_short_circuit = False
+
             for _, case in cases:
                 case_number += 1
                 assert isinstance(case, TestCase)
 
-                # Stop grading if we're short circuiting (sum mode only — min runs all)
-                if is_short_circuiting and not is_min_batch:
+                # Stop grading if we're short circuiting. Sum mode uses the
+                # cross-case is_short_circuiting flag; min mode uses its own
+                # per-batch flag (set when a case earns 0 fraction).
+                if (is_short_circuiting and not is_min_batch) or min_batch_short_circuit:
                     result = Result(case, result_flag=Result.SC)
                 else:
                     case_cache_key = (case.config['in'], case.config['out'])
@@ -616,6 +622,10 @@ class JudgeWorker:
                     if result.result_flag & Result.WA:
                         is_short_circuiting |= not case.points
                         batch_failed = True
+                        # In min mode: a WA with zero earned points means the
+                        # batch min is now 0 and can never recover. Skip the rest.
+                        if is_min_batch and not result.points:
+                            min_batch_short_circuit = True
 
                 result.proc_output = utf8bytes(result.output)
 
