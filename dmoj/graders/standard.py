@@ -8,7 +8,7 @@ from dmoj.cptbox.lazy_bytes import LazyBytes
 from dmoj.error import CompileError, OutputLimitExceeded
 from dmoj.executors import executors
 from dmoj.executors.base_executor import BaseExecutor
-from dmoj.graders.base import BaseGrader
+from dmoj.graders.base import BaseGrader, SIGNATURE_GRADER_LANGUAGES
 from dmoj.problem import TestCase
 from dmoj.result import CheckerResult, Result
 from dmoj.utils.unicode import utf8bytes
@@ -150,13 +150,7 @@ class StandardGrader(BaseGrader):
         )
 
     def _generate_signature_binary(self) -> BaseExecutor:
-        language_handlers = {
-            'cpp': ('C', 'C11', 'C23', 'CPP03', 'CPP11', 'CPP14', 'CPP17', 'CPP20', 'CPP23', 'CPPTHEMIS', 'CLANG', 'CLPP14', 'CLPP17', 'CLPP20', 'CLPP23'),
-            'java': ('JAVA', 'JAVA8', 'JAVA9', 'JAVA10', 'JAVA11', 'JAVA15', 'JAVA17'),
-            'python': ('PY2', 'PY3', 'PYPY', 'PYPY3'),
-        }
-
-        for lang_type, languages in language_handlers.items():
+        for lang_type, languages in SIGNATURE_GRADER_LANGUAGES.items():
             if self.language in languages:
                 return getattr(self, f'_generate_{lang_type}_binary')()
 

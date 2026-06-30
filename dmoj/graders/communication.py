@@ -14,6 +14,7 @@ from dmoj.cptbox.filesystem_policies import RecursiveDir
 from dmoj.error import InternalError
 from dmoj.executors import executors
 from dmoj.executors.base_executor import BaseExecutor
+from dmoj.graders.base import SIGNATURE_GRADER_LANGUAGES
 from dmoj.graders.standard import StandardGrader
 from dmoj.judgeenv import env, get_problem_root
 from dmoj.problem import Problem, TestCase
@@ -188,8 +189,8 @@ class CommunicationGrader(StandardGrader):
         if 'signature' not in self.problem.config.communication:
             return super()._generate_binary()
 
-        cpp_siggraders = ('C', 'C11', 'CPP03', 'CPP11', 'CPP14', 'CPP17', 'CPP20', 'CPPTHEMIS', 'CLANG', 'CLANGX')
-        java_siggraders = ('JAVA', 'JAVA8', 'JAVA9', 'JAVA10', 'JAVA11', 'JAVA15', 'JAVA17')
+        cpp_siggraders = SIGNATURE_GRADER_LANGUAGES['cpp']
+        java_siggraders = SIGNATURE_GRADER_LANGUAGES['java']
 
         if self.language in cpp_siggraders:
             aux_sources = {}

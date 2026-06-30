@@ -10,6 +10,32 @@ if TYPE_CHECKING:
     from dmoj.judge import JudgeWorker
 
 
+# Runtimes eligible for signature grading, keyed by language family. Shared by
+# StandardGrader and CommunicationGrader so the two cannot drift apart when a
+# new language is added (e.g. CPP23). Keep these in sync with dmoj/executors/.
+SIGNATURE_GRADER_LANGUAGES = {
+    'cpp': (
+        'C',
+        'C11',
+        'C23',
+        'CPP03',
+        'CPP11',
+        'CPP14',
+        'CPP17',
+        'CPP20',
+        'CPP23',
+        'CPPTHEMIS',
+        'CLANG',
+        'CLPP14',
+        'CLPP17',
+        'CLPP20',
+        'CLPP23',
+    ),
+    'java': ('JAVA', 'JAVA8', 'JAVA9', 'JAVA10', 'JAVA11', 'JAVA15', 'JAVA17'),
+    'python': ('PY2', 'PY3', 'PYPY', 'PYPY3'),
+}
+
+
 class BaseGrader:
     source: bytes
     language: str
