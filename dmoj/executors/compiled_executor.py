@@ -138,7 +138,7 @@ class CompiledExecutor(BaseExecutor, metaclass=_CompiledExecutorMeta):
 
         # Some runtimes *cough cough* Swift *cough cough* actually check the environment variables too.
         env = self.get_compile_env() or os.environ.copy()
-        env['TERM'] = 'xterm'
+        env.setdefault('TERM', 'xterm')
         # Instruct compilers to put their temporary files into the submission directory,
         # so that we can allow it as writeable, rather than of all of /tmp.
         assert self._dir is not None
@@ -193,8 +193,8 @@ class CompiledExecutor(BaseExecutor, metaclass=_CompiledExecutorMeta):
         limit = env.compiler_output_character_limit
         try:
             output = safe_communicate(process, None, outlimit=limit, errlimit=limit)[self.compile_output_index]
-        except OutputLimitExceeded as e:
-            output = b'compiler output too long (> 64kb)\nMore informations: ' + str(e).encode()
+        except OutputLimitExceeded:
+            output = b'compiler output too long (> %d kiB)' % (limit // 1024)
 
         if self.is_failed_compile(process):
             if process.is_tle:

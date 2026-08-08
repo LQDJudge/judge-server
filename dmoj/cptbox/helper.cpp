@@ -33,15 +33,15 @@
 #define FD_DIR "/proc/self/fd"
 #endif
 
-inline void setrlimit2(int resource, rlim_t cur, rlim_t max) {
+inline int setrlimit2(int resource, rlim_t cur, rlim_t max) {
     rlimit limit;
     limit.rlim_cur = cur;
     limit.rlim_max = max;
-    setrlimit(resource, &limit);
+    return setrlimit(resource, &limit);
 }
 
-inline void setrlimit2(int resource, rlim_t limit) {
-    setrlimit2(resource, limit, limit);
+inline int setrlimit2(int resource, rlim_t limit) {
+    return setrlimit2(resource, limit, limit);
 }
 
 static inline void cptbox_close_fd(int fd) {
@@ -135,45 +135,52 @@ int cptbox_child_run(const struct child_config *config) {
     seccomp_release(ctx);
 #endif
 
-    if (config->stdin_ >= 0)
-        dup2(config->stdin_, 0);
-    if (config->stdout_ >= 0)
-        dup2(config->stdout_, 1);
-    if (config->stderr_ >= 0)
-        dup2(config->stderr_, 2);
-    if (config->fd_3_ >= 0)
-        dup2(config->fd_3_, 3);
-    else
+    if (config->stdin_ >= 0 && dup2(config->stdin_, 0) < 0)
+        return PTBOX_SPAWN_FAIL_DUP2;
+    if (config->stdout_ >= 0 && dup2(config->stdout_, 1) < 0)
+        return PTBOX_SPAWN_FAIL_DUP2;
+    if (config->stderr_ >= 0 && dup2(config->stderr_, 2) < 0)
+        return PTBOX_SPAWN_FAIL_DUP2;
+    if (config->fd_3_ >= 0) {
+        if (dup2(config->fd_3_, 3) < 0)
+            return PTBOX_SPAWN_FAIL_DUP2;
+    } else {
         cptbox_close_fd(3);
-    if (config->fd_4_ >= 0)
-        dup2(config->fd_4_, 4);
-    else
+    }
+    if (config->fd_4_ >= 0) {
+        if (dup2(config->fd_4_, 4) < 0)
+            return PTBOX_SPAWN_FAIL_DUP2;
+    } else {
         cptbox_close_fd(4);
+    }
     cptbox_closefrom(5);
 
     // All these limits should be dropped after initializing seccomp, since seccomp allocates
     // memory, and if an arena isn't sufficiently free it could force seccomp into an OOM
     // situation where we'd fail to initialize.
-    if (config->address_space)
-        setrlimit2(RLIMIT_AS, config->address_space);
+    if (config->address_space && setrlimit2(RLIMIT_AS, config->address_space))
+        return PTBOX_SPAWN_FAIL_SETRLIMIT2;
 
-    if (config->memory)
-        setrlimit2(RLIMIT_DATA, config->memory);
+    if (config->memory && setrlimit2(RLIMIT_DATA, config->memory))
+        return PTBOX_SPAWN_FAIL_SETRLIMIT2;
 
-    if (config->cpu_time)
-        setrlimit2(RLIMIT_CPU, config->cpu_time, config->cpu_time + 1);
+    if (config->cpu_time && setrlimit2(RLIMIT_CPU, config->cpu_time, config->cpu_time + 1))
+        return PTBOX_SPAWN_FAIL_SETRLIMIT2;
 
-    if (config->nproc >= 0)
-        setrlimit2(RLIMIT_NPROC, config->nproc);
+    if (config->nproc >= 0 && setrlimit2(RLIMIT_NPROC, config->nproc))
+        return PTBOX_SPAWN_FAIL_SETRLIMIT2;
 
-    if (config->fsize >= 0)
-        setrlimit2(RLIMIT_FSIZE, config->fsize);
+    if (config->fsize >= 0 && setrlimit2(RLIMIT_FSIZE, config->fsize))
+        return PTBOX_SPAWN_FAIL_SETRLIMIT2;
 
-    if (config->dir && *config->dir)
-        chdir(config->dir);
+    if (setrlimit2(RLIMIT_STACK, RLIM_INFINITY))
+        return PTBOX_SPAWN_FAIL_SETRLIMIT2;
 
-    setrlimit2(RLIMIT_STACK, RLIM_INFINITY);
-    setrlimit2(RLIMIT_CORE, 0);
+    if (setrlimit2(RLIMIT_CORE, 0))
+        return PTBOX_SPAWN_FAIL_SETRLIMIT2;
+
+    if (config->dir && *config->dir && chdir(config->dir))
+        return PTBOX_SPAWN_FAIL_CHDIR;
 
     execve(config->file, config->argv, config->envp);
     perror("execve");
