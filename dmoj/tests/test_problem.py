@@ -2,8 +2,8 @@ import os
 import unittest
 from unittest import mock
 
-from dmoj.config import InvalidInitException
-from dmoj.problem import Problem, ProblemDataManager
+from dmoj.config import ConfigNode, InvalidInitException
+from dmoj.problem import Problem, ProblemDataManager, TestCase as ProblemTestCase
 
 
 class ProblemTest(unittest.TestCase):
@@ -110,6 +110,47 @@ class ProblemTest(unittest.TestCase):
             self.problem_data.update({'init.yml': 'archive: foo.zip'})
             with self.assertRaisesRegex(InvalidInitException, 'No test cases'):
                 MockProblem('test', 2, 16384, {})
+
+    def test_generator_defaults_to_problem_time_limit(self):
+        executor = mock.Mock()
+        process = mock.Mock()
+        process.unsafe_communicate.return_value = (b'', b'')
+        executor.launch.return_value = process
+        problem = mock.Mock(
+            id='test',
+            storage_namespace=None,
+            time_limit=3.5,
+            problem_data={},
+        )
+        case = ProblemTestCase(1, 0, ConfigNode({'points': 1}), problem)
+
+        with mock.patch('dmoj.problem.get_problem_root', return_value='/tmp'), mock.patch(
+            'dmoj.problem.compile_with_auxiliary_files', return_value=executor
+        ), mock.patch('dmoj.problem.parse_helper_file_error'):
+            case._run_generator('generator.cpp')
+
+        self.assertEqual(executor.launch.call_args.kwargs['time'], 3.5)
+
+    def test_generator_config_time_limit_overrides_problem_time_limit(self):
+        executor = mock.Mock()
+        process = mock.Mock()
+        process.unsafe_communicate.return_value = (b'', b'')
+        executor.launch.return_value = process
+        problem = mock.Mock(
+            id='test',
+            storage_namespace=None,
+            time_limit=3.5,
+            problem_data={},
+        )
+        case = ProblemTestCase(1, 0, ConfigNode({'points': 1}), problem)
+        generator = ConfigNode({'source': 'generator.cpp', 'time_limit': 7})
+
+        with mock.patch('dmoj.problem.get_problem_root', return_value='/tmp'), mock.patch(
+            'dmoj.problem.compile_with_auxiliary_files', return_value=executor
+        ), mock.patch('dmoj.problem.parse_helper_file_error'):
+            case._run_generator(generator)
+
+        self.assertEqual(executor.launch.call_args.kwargs['time'], 7)
 
     def tearDown(self):
         self.data_patch.stop()

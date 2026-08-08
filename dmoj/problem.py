@@ -397,7 +397,7 @@ class TestCase(BaseTestCase):
         args = args or []
 
         # resource limits on how to run the generator
-        time_limit = env.generator_time_limit
+        time_limit = self.problem.time_limit
         memory_limit = env.generator_memory_limit
         compiler_time_limit = env.generator_compiler_time_limit
         lang = None  # Default to C/C++
