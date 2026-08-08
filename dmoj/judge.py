@@ -388,8 +388,9 @@ class JudgeWorker:
         # FIXME(tbrindus): marked Any pending grader cleanups.
         self.grader: Any = None
 
-        self.worker_process_conn, child_conn = multiprocessing.Pipe()
-        self.worker_process = multiprocessing.Process(
+        worker_context = multiprocessing.get_context('fork')
+        self.worker_process_conn, child_conn = worker_context.Pipe()
+        self.worker_process = worker_context.Process(
             name='DMOJ Judge Handler for %s/%d' % (self.submission.problem_id, self.submission.id),
             target=self._worker_process_main,
             args=(child_conn, self.worker_process_conn),
