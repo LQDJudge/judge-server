@@ -5,6 +5,10 @@ from dmoj.cptbox import TracedPopen
 from dmoj.graders.standard import StandardGrader
 from dmoj.problem import TestCase
 from dmoj.result import CheckerResult, Result
+from dmoj.utils.interactive_feedback import (
+    InteractiveTranscript,
+    attach_interaction_transcript,
+)
 from dmoj.utils.unicode import utf8bytes, utf8text
 
 
@@ -19,9 +23,10 @@ MAX_NUMBER_DIGITS = 10000
 class Interactor:
     _tokens: Optional[bytes]
 
-    def __init__(self, process: TracedPopen) -> None:
+    def __init__(self, process: TracedPopen, transcript: Optional[InteractiveTranscript] = None) -> None:
         self.process = process
         self._tokens = None
+        self.transcript = transcript
 
     def _abbreviate(self, s: AnyStr, n: int = 5) -> str:
         text = utf8text(s, 'replace')
@@ -34,6 +39,8 @@ class Interactor:
         ret = self.process.stdout.read()
         if ret == EOF:
             raise IOError('child stream closed')
+        if self.transcript:
+            self.transcript.record('USER', ret)
         return ret
 
     def readln(self, strip_newline: bool = True) -> bytes:
@@ -41,6 +48,8 @@ class Interactor:
         ret = self.process.stdout.readline()
         if ret == EOF:
             raise IOError('child stream closed')
+        if self.transcript:
+            self.transcript.record('USER', ret)
         if strip_newline:
             ret = ret.rstrip()
         return ret
@@ -89,12 +98,18 @@ class Interactor:
 
     def write(self, val: Any) -> None:
         assert self.process.stdin is not None
-        self.process.stdin.write(utf8bytes(str(val)))
+        data = utf8bytes(str(val))
+        if self.transcript:
+            self.transcript.record('JUDGE', data)
+        self.process.stdin.write(data)
         self.process.stdin.flush()
 
     def writeln(self, val: Any) -> None:
         assert self.process.stdin is not None
-        self.process.stdin.write(utf8bytes(str(val) + '\n'))
+        data = utf8bytes(str(val) + '\n')
+        if self.transcript:
+            self.transcript.record('JUDGE', data)
+        self.process.stdin.write(data)
         self.process.stdin.flush()
 
     def close(self) -> None:
@@ -112,7 +127,8 @@ class InteractiveGrader(StandardGrader):
         assert self._current_proc is not None
         assert self._current_proc.stderr is not None
 
-        interactor = Interactor(self._current_proc)
+        self._interaction_transcript = InteractiveTranscript(max_length=case.output_prefix_length)
+        interactor = Interactor(self._current_proc, self._interaction_transcript)
         self.check = False
         self.feedback = None
         try:
@@ -124,6 +140,7 @@ class InteractiveGrader(StandardGrader):
             pass
 
         self._current_proc.wait()
+        result.extended_feedback = self._interaction_transcript.render()
         return self._current_proc.stderr.read()
 
     def check_result(self, case: TestCase, result: Result) -> CheckerOutput:
@@ -132,8 +149,20 @@ class InteractiveGrader(StandardGrader):
             # has issued the AC verdict
             # This results in a TLE verdict getting full points, which should not be the case
             return False
+        extended_feedback = self._interaction_transcript.render()
         if not isinstance(self.check, CheckerResult):
-            return CheckerResult(self.check, case.points if self.check else 0.0, feedback=self.feedback)
+            check = CheckerResult(
+                self.check,
+                case.points if self.check else 0.0,
+                feedback=self.feedback,
+            )
+            check.extended_feedback = extended_feedback
+            return check
+        attach_interaction_transcript(
+            self.check,
+            extended_feedback,
+            case.output_prefix_length,
+        )
         return self.check
 
     def interact(self, case: TestCase, interactor: Interactor) -> CheckerOutput:
