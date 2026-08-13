@@ -189,6 +189,15 @@ class CommunicationGrader(StandardGrader):
         for fifo_dir in self._fifo_dir:
             shutil.rmtree(fifo_dir, ignore_errors=True)
 
+    def abort_grading(self) -> None:
+        super().abort_grading()
+
+        for _user_proc in getattr(self, '_user_procs', ()):
+            try:
+                _user_proc.kill()
+            except OSError:
+                pass
+
     def _launch_process(self, case: TestCase, input_file=None) -> None:
         # Indices for the objects related to each user process
         indices = range(self.num_processes)
