@@ -4,13 +4,14 @@ import shutil
 import stat
 import subprocess
 import tempfile
+import threading
 import uuid
-from typing import List, TYPE_CHECKING
+from typing import List, Optional, TYPE_CHECKING, Tuple
 
 from dmoj.checkers import CheckerOutput
 from dmoj.contrib import contrib_modules
 from dmoj.cptbox import TracedPopen
-from dmoj.cptbox.filesystem_policies import RecursiveDir
+from dmoj.cptbox.filesystem_policies import ExactFile
 from dmoj.error import InternalError
 from dmoj.executors import executors
 from dmoj.executors.base_executor import BaseExecutor
@@ -57,6 +58,8 @@ class CommunicationGrader(StandardGrader):
     _manager_proc: TracedPopen
     _user_procs: List[TracedPopen]
     _user_results: List[Result]
+    _user_binaries: List[BaseExecutor]
+    _user_abandoned: List[bool]
 
     def __init__(self, judge: 'JudgeWorker', problem: Problem, language: str, source: bytes) -> None:
         super().__init__(judge, problem, language, source)
@@ -73,13 +76,21 @@ class CommunicationGrader(StandardGrader):
         if self.num_processes < 1:
             raise InternalError('num_processes must be positive')
 
-        self.manager_binary = self._generate_manager_binary()
+        self._user_binaries = [self.binary]
+        self._user_binaries += [self.binary.clone() for _ in range(self.num_processes - 1)]
+
+        self._manager_binary = self._generate_manager_binary()
+        self._manager_orig_write_fs = self._manager_binary.write_fs
 
     def populate_result(self, error: bytes, result: Result, process: TracedPopen) -> None:
         for i in range(self.num_processes):
+            # A process the manager never talked to takes no part in the
+            # interaction, so nothing it does may affect the verdict.
+            if self._user_abandoned[i]:
+                continue
             _user_proc, _user_result = self._user_procs[i], self._user_results[i]
             assert _user_proc.stderr is not None
-            self.binary.populate_result(_user_proc.stderr.read(), _user_result, _user_proc)
+            self._user_binaries[i].populate_result(_user_proc.stderr.read(), _user_result, _user_proc)
             result = merge_results(result, _user_result)
 
         # The actual running time is the sum of every user process, but each
@@ -97,7 +108,7 @@ class CommunicationGrader(StandardGrader):
 
         return contrib_modules[self.contrib_type].ContribModule.parse_return_code(
             self._manager_proc,
-            self.manager_binary,
+            self._manager_binary,
             case.points,
             self._manager_time_limit,
             self._manager_memory_limit,
@@ -107,81 +118,159 @@ class CommunicationGrader(StandardGrader):
             stderr=self._manager_stderr,
         )
 
+    def _open_user_fifos(self, i: int) -> Tuple[int, int, bool]:
+        """Open the (stdin, stdout) FIFO fds for user process ``i``.
+
+        The opens block until the manager connects its ends -- the rendezvous
+        that keeps the user process from reading a spurious EOF. A manager that
+        exits without ever connecting them (e.g. a run-twice manager rejecting
+        an earlier process) would leave the opens blocked forever, so a helper
+        thread waits on the manager's death and releases them; the user process
+        then just sees EOF, as in CMS.
+
+        Also returns whether the opens had to be released that way, i.e. whether
+        the manager exited without ever talking to this process.
+        """
+        guard = threading.Lock()
+        connected = False
+        release_fds: List[int] = []
+
+        def release_if_manager_exits() -> None:
+            nonlocal release_fds
+            self._manager_proc._died.wait()
+            with guard:
+                if not connected:
+                    release_fds = self._release_user_fifos(i)
+
+        threading.Thread(target=release_if_manager_exits, daemon=True).start()
+
+        try:
+            stdin_fd = os.open(self._fifo_manager_to_user[i], STDIN_FD_FLAGS)
+            stdout_fd = os.open(self._fifo_user_to_manager[i], STDOUT_FD_FLAGS, STDOUT_FD_MODE)
+        finally:
+            with guard:
+                connected = True
+                stale_fds = release_fds
+            for fd in stale_fds:
+                os.close(fd)
+
+        return stdin_fd, stdout_fd, bool(stale_fds)
+
+    def _release_user_fifos(self, i: int) -> List[int]:
+        # O_RDWR never blocks or fails on a FIFO; O_WRONLY | O_NONBLOCK would ENXIO if no reader is there yet.
+        return [
+            os.open(self._fifo_manager_to_user[i], os.O_RDWR),
+            os.open(self._fifo_user_to_manager[i], os.O_RDWR),
+        ]
+
+    def _end_processes(self, manager_proc: Optional[TracedPopen], kill_all: bool) -> None:
+        """End what is still running and remove the FIFOs.
+
+        ``kill_all`` ends every user process rather than just the abandoned
+        ones, for when there is no interaction left to grade at all.
+        """
+        if manager_proc is not None and manager_proc.returncode is None:
+            manager_proc.kill()
+
+        # An abandoned process takes no part in the interaction and is left out
+        # of the verdict, so there is nothing to wait for: end it rather than
+        # let it run out its own limits and delay grading for no reason. Every
+        # other process is left alone -- once engaged, a process is the
+        # submission at work, and must finish within its limits like any other.
+        for i, _user_proc in enumerate(self._user_procs):
+            if kill_all or self._user_abandoned[i]:
+                _user_proc.kill()
+
+        if manager_proc is not None:
+            manager_proc.wait()
+        for _user_proc in self._user_procs:
+            _user_proc.wait()
+
+        for fifo_dir in self._fifo_dir:
+            shutil.rmtree(fifo_dir, ignore_errors=True)
+
     def _launch_process(self, case: TestCase, input_file=None) -> None:
         # Indices for the objects related to each user process
         indices = range(self.num_processes)
 
-        # Create FIFOs for communication between manager and user processes
-        self._fifo_dir = [tempfile.mkdtemp(prefix='fifo_') for i in indices]
-        self._fifo_user_to_manager = [os.path.join(self._fifo_dir[i], 'u%d_to_m' % i) for i in indices]
-        self._fifo_manager_to_user = [os.path.join(self._fifo_dir[i], 'm_to_u%d' % i) for i in indices]
-        for i in indices:
-            os.mkfifo(self._fifo_user_to_manager[i])
-            os.mkfifo(self._fifo_manager_to_user[i])
-            os.chmod(self._fifo_dir[i], 0o700)
-            os.chmod(self._fifo_user_to_manager[i], 0o666)
-            os.chmod(self._fifo_manager_to_user[i], 0o666)
-
-        # Allow manager to write to FIFOs
-        self.manager_binary.write_fs += [RecursiveDir(_dir) for _dir in self._fifo_dir]
-
-        # Create manager process
-        manager_args = []
-        for i in indices:
-            manager_args += [shlex.quote(self._fifo_user_to_manager[i]), shlex.quote(self._fifo_manager_to_user[i])]
-
-        # https://github.com/cms-dev/cms/blob/v1.4/cms/grading/tasktypes/Communication.py#L319-L320
-        self._manager_time_limit = self.num_processes * (self.problem.time_limit + 1.0)
-        self._manager_memory_limit = self.handler_data.manager.memory_limit or env['generator_memory_limit']
-
-        self._current_proc = self._manager_proc = self.manager_binary.launch(
-            *manager_args,
-            time=self._manager_time_limit,
-            memory=self._manager_memory_limit,
-            stdin=input_file or subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-
-        # Create user processes
+        self._fifo_dir = []
         self._user_procs = []
         self._user_results = []
-        for i in indices:
-            # Setup std*** redirection
-            stdin_fd = os.open(self._fifo_manager_to_user[i], STDIN_FD_FLAGS)
-            stdout_fd = os.open(self._fifo_user_to_manager[i], STDOUT_FD_FLAGS, STDOUT_FD_MODE)
+        self._user_abandoned = []
+        manager_proc: Optional[TracedPopen] = None
 
-            # Pass the per-process index as argv[1] (CMS Communication
-            # convention). IOI stubs use this to decide which role they
-            # play (e.g. encoder vs decoder for two-process tasks).
-            self._user_procs.append(
-                self.binary.launch(
-                    str(i),
-                    time=self.problem.time_limit,
-                    memory=self.problem.memory_limit,
-                    symlinks=case.config.symlinks,
-                    stdin=stdin_fd,
-                    stdout=stdout_fd,
-                    stderr=subprocess.PIPE,
-                    wall_time=case.config.wall_time_factor * self.problem.time_limit,
-                )
+        try:
+            # Create FIFOs for communication between manager and user processes
+            self._fifo_dir = [tempfile.mkdtemp(prefix='fifo_') for i in indices]
+            self._fifo_user_to_manager = [os.path.join(self._fifo_dir[i], 'u%d_to_m' % i) for i in indices]
+            self._fifo_manager_to_user = [os.path.join(self._fifo_dir[i], 'm_to_u%d' % i) for i in indices]
+            for i in indices:
+                os.mkfifo(self._fifo_user_to_manager[i])
+                os.mkfifo(self._fifo_manager_to_user[i])
+                os.chmod(self._fifo_dir[i], 0o700)
+                os.chmod(self._fifo_user_to_manager[i], 0o666)
+                os.chmod(self._fifo_manager_to_user[i], 0o666)
+
+            # Allow manager to write to FIFOs
+            self._manager_binary.write_fs = self._manager_orig_write_fs + [
+                ExactFile(fifo) for fifo in self._fifo_user_to_manager + self._fifo_manager_to_user
+            ]
+
+            # Create manager process
+            manager_args = []
+            for i in indices:
+                manager_args += [
+                    shlex.quote(self._fifo_user_to_manager[i]),
+                    shlex.quote(self._fifo_manager_to_user[i]),
+                ]
+
+            # https://github.com/cms-dev/cms/blob/v1.4/cms/grading/tasktypes/Communication.py#L319-L320
+            self._manager_time_limit = self.num_processes * (self.problem.time_limit + 1.0)
+            self._manager_memory_limit = self.handler_data.manager.memory_limit or env['generator_memory_limit']
+
+            self._current_proc = self._manager_proc = manager_proc = self._manager_binary.launch(
+                *manager_args,
+                time=self._manager_time_limit,
+                memory=self._manager_memory_limit,
+                stdin=input_file or subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
             )
-            self._user_results.append(Result(case))
 
-            # Close file descriptors passed to the process
-            os.close(stdin_fd)
-            os.close(stdout_fd)
+            # Create user processes
+            for i in indices:
+                # Setup std*** redirection
+                stdin_fd, stdout_fd, abandoned = self._open_user_fifos(i)
+                self._user_abandoned.append(abandoned)
+
+                try:
+                    _user_proc = self._user_binaries[i].launch(
+                        str(i),
+                        time=self.problem.time_limit,
+                        memory=self.problem.memory_limit,
+                        symlinks=case.config.symlinks,
+                        stdin=stdin_fd,
+                        stdout=stdout_fd,
+                        stderr=subprocess.PIPE,
+                        wall_time=case.config.wall_time_factor * self.problem.time_limit,
+                    )
+                finally:
+                    # Close file descriptors passed to the process
+                    os.close(stdin_fd)
+                    os.close(stdout_fd)
+
+                self._user_procs.append(_user_proc)
+                self._user_results.append(Result(case))
+        except Exception:
+            # Nothing will grade this case, so leave nothing running behind it.
+            self._end_processes(manager_proc, kill_all=True)
+            raise
 
     def _interact_with_process(self, case: TestCase, result: Result) -> bytes:
-        result.proc_output, self._manager_stderr = self._manager_proc.communicate()
-
-        self._manager_proc.wait()
-        for _user_proc in self._user_procs:
-            _user_proc.wait()
-
-        # Cleanup FIFOs
-        for _dir in self._fifo_dir:
-            shutil.rmtree(_dir)
+        try:
+            result.proc_output, self._manager_stderr = self._manager_proc.communicate()
+        finally:
+            self._end_processes(self._manager_proc, kill_all=False)
 
         return self._manager_stderr
 
