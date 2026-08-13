@@ -4,6 +4,8 @@ from typing import TYPE_CHECKING
 from zipfile import BadZipFile, ZipFile
 
 from dmoj.error import CompileError
+from dmoj.executors import executors
+from dmoj.executors.base_executor import BaseExecutor
 from dmoj.graders.standard import StandardGrader
 from dmoj.problem import Problem, TestCase
 from dmoj.result import CheckerResult, Result
@@ -19,6 +21,11 @@ class OutputOnlyGrader(StandardGrader):
         super().__init__(judge, problem, language, source)
         if language == 'OUTPUT':
             self.zip_file = self.get_zip_file()
+
+    def _generate_binary(self) -> BaseExecutor:
+        if self.language == 'OUTPUT':
+            return executors[self.language].Executor(self.problem.id, self.source)
+        return super()._generate_binary()
 
     def _interact_with_zipfile(self, result: Result, case: TestCase) -> None:
         output_name = case.config['out']

@@ -1,0 +1,6 @@
+#ifndef _OUTPUT_ONLY_SIGGRADE_HEADER_INCLUDED
+#define _OUTPUT_ONLY_SIGGRADE_HEADER_INCLUDED
+
+int answer(int);
+
+#endif
