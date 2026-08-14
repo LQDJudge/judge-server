@@ -60,6 +60,7 @@ class CommunicationGrader(StandardGrader):
     _user_results: List[Result]
     _user_binaries: List[BaseExecutor]
     _user_abandoned: List[bool]
+    _communication_cpu_tle: bool
 
     def __init__(self, judge: 'JudgeWorker', problem: Problem, language: str, source: bytes) -> None:
         super().__init__(judge, problem, language, source)
@@ -91,12 +92,17 @@ class CommunicationGrader(StandardGrader):
             _user_proc, _user_result = self._user_procs[i], self._user_results[i]
             assert _user_proc.stderr is not None
             self._user_binaries[i].populate_result(_user_proc.stderr.read(), _user_result, _user_proc)
+            # CMS communication limits are checked against total contestant
+            # user CPU time. TracedPopen.execution_time also charges FIFO wait
+            # time, which is wildly inflated for many-process communication
+            # tasks like Classroom.
+            _user_result.execution_time = _user_proc.cpu_time or 0.0
             result = merge_results(result, _user_result)
 
         # The actual running time is the sum of every user process, but each
         # sandbox can only check its own; if the sum is greater than the time
         # limit we adjust the result.
-        if result.execution_time > self.problem.time_limit:
+        if self._communication_cpu_tle or result.execution_time > self.problem.time_limit:
             result.result_flag |= Result.TLE
 
     def check_result(self, case: TestCase, result: Result) -> CheckerOutput:
@@ -189,6 +195,29 @@ class CommunicationGrader(StandardGrader):
         for fifo_dir in self._fifo_dir:
             shutil.rmtree(fifo_dir, ignore_errors=True)
 
+    def _watch_user_cpu_limit(self, stop: threading.Event) -> None:
+        while not stop.wait(0.05):
+            try:
+                total_cpu = sum(_user_proc.cpu_time or 0.0 for _user_proc in self._user_procs)
+            except OSError:
+                continue
+
+            if total_cpu <= self.problem.time_limit:
+                continue
+
+            self._communication_cpu_tle = True
+
+            for _user_proc in self._user_procs:
+                try:
+                    _user_proc.kill()
+                except OSError:
+                    pass
+            try:
+                self._manager_proc.kill()
+            except OSError:
+                pass
+            return
+
     def abort_grading(self) -> None:
         super().abort_grading()
 
@@ -206,6 +235,7 @@ class CommunicationGrader(StandardGrader):
         self._user_procs = []
         self._user_results = []
         self._user_abandoned = []
+        self._communication_cpu_tle = False
         manager_proc: Optional[TracedPopen] = None
 
         try:
@@ -236,6 +266,8 @@ class CommunicationGrader(StandardGrader):
             # https://github.com/cms-dev/cms/blob/v1.4/cms/grading/tasktypes/Communication.py#L319-L320
             self._manager_time_limit = self.num_processes * (self.problem.time_limit + 1.0)
             self._manager_memory_limit = self.handler_data.manager.memory_limit or env['generator_memory_limit']
+            user_execution_time_limit = self._manager_time_limit
+            user_wall_time_limit = case.config.wall_time_factor * (self.problem.time_limit + 1.0)
 
             self._current_proc = self._manager_proc = manager_proc = self._manager_binary.launch(
                 *manager_args,
@@ -255,13 +287,13 @@ class CommunicationGrader(StandardGrader):
                 try:
                     _user_proc = self._user_binaries[i].launch(
                         str(i),
-                        time=self.problem.time_limit,
+                        time=user_execution_time_limit,
                         memory=self.problem.memory_limit,
                         symlinks=case.config.symlinks,
                         stdin=stdin_fd,
                         stdout=stdout_fd,
                         stderr=subprocess.PIPE,
-                        wall_time=case.config.wall_time_factor * self.problem.time_limit,
+                        wall_time=user_wall_time_limit,
                     )
                 finally:
                     # Close file descriptors passed to the process
@@ -276,9 +308,14 @@ class CommunicationGrader(StandardGrader):
             raise
 
     def _interact_with_process(self, case: TestCase, result: Result) -> bytes:
+        cpu_watchdog_stop = threading.Event()
+        cpu_watchdog = threading.Thread(target=self._watch_user_cpu_limit, args=(cpu_watchdog_stop,), daemon=True)
+        cpu_watchdog.start()
         try:
             result.proc_output, self._manager_stderr = self._manager_proc.communicate()
         finally:
+            cpu_watchdog_stop.set()
+            cpu_watchdog.join()
             self._end_processes(self._manager_proc, kill_all=False)
 
         return self._manager_stderr
