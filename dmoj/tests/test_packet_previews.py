@@ -1,11 +1,12 @@
 import pickle
+import threading
 import unittest
 from io import BytesIO
 from unittest import mock
 
 from dmoj.judge import JudgeWorker
 from dmoj.packet import PacketManager
-from dmoj.result import Result, TESTCASE_PREVIEW_MAX_BYTES
+from dmoj.result import CheckerResult, Result, TESTCASE_PREVIEW_MAX_BYTES
 
 
 class _ProblemData:
@@ -106,6 +107,35 @@ class PacketPreviewTest(unittest.TestCase):
         result.proc_output = b'a' * (TESTCASE_PREVIEW_MAX_BYTES + 1)
 
         self.assertEqual(result.output, 'a' * TESTCASE_PREVIEW_MAX_BYTES + '...')
+
+    def test_feedback_fields_are_capped_in_testcase_packet(self):
+        result = Result(_Case())
+        result.feedback = 'f' * (TESTCASE_PREVIEW_MAX_BYTES + 1)
+        result.extended_feedback = 'e' * (TESTCASE_PREVIEW_MAX_BYTES + 1)
+        manager = object.__new__(PacketManager)
+        manager.conn = None
+        manager._closed = True
+        manager._testcase_queue_lock = threading.Lock()
+        manager._testcase_queue = [(1, result, '', '')]
+        manager.judge = mock.Mock(current_submission=mock.Mock(id=123))
+        manager._send_packet = mock.Mock()
+
+        manager._flush_testcase_queue()
+
+        case_packet = manager._send_packet.call_args[0][0]['cases'][0]
+        self.assertEqual(case_packet['feedback'], 'f' * TESTCASE_PREVIEW_MAX_BYTES + '...')
+        self.assertEqual(case_packet['extended-feedback'], 'e' * TESTCASE_PREVIEW_MAX_BYTES + '...')
+
+    def test_checker_result_feedback_fields_use_shared_preview_limit(self):
+        result = CheckerResult(
+            False,
+            0,
+            feedback='f' * (TESTCASE_PREVIEW_MAX_BYTES + 1),
+            extended_feedback='e' * (TESTCASE_PREVIEW_MAX_BYTES + 1),
+        )
+
+        self.assertEqual(result.feedback, 'f' * TESTCASE_PREVIEW_MAX_BYTES + '...')
+        self.assertEqual(result.extended_feedback, 'e' * TESTCASE_PREVIEW_MAX_BYTES + '...')
 
 
 if __name__ == '__main__':

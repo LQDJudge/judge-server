@@ -2,7 +2,7 @@ from typing import List, Optional, TYPE_CHECKING, Tuple
 
 from dmoj.utils.error import print_protection_fault
 from dmoj.utils.os_ext import strsignal
-from dmoj.utils.unicode import utf8text
+from dmoj.utils.unicode import utf8bytes, utf8text
 
 if TYPE_CHECKING:
     from dmoj.cptbox import TracedPopen
@@ -17,6 +17,12 @@ def preview_bytes(data: bytes, max_bytes: int = TESTCASE_PREVIEW_MAX_BYTES) -> s
     if len(data) <= max_bytes:
         return utf8text(data, 'replace')
     return utf8text(data[:max_bytes], 'replace') + '...'
+
+
+def preview_text(data: Optional[str], max_bytes: int = TESTCASE_PREVIEW_MAX_BYTES) -> Optional[str]:
+    if data is None:
+        return None
+    return preview_bytes(utf8bytes(data), max_bytes)
 
 
 class Result:
@@ -137,5 +143,5 @@ class CheckerResult:
 
         self.passed: bool = passed
         self.points: float = points
-        self.feedback: Optional[str] = feedback
-        self.extended_feedback: Optional[str] = None if extended_feedback is None else extended_feedback[:180]
+        self.feedback: Optional[str] = preview_text(feedback)
+        self.extended_feedback: Optional[str] = preview_text(extended_feedback)

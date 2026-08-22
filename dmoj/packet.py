@@ -14,7 +14,7 @@ from typing import List, Optional, TYPE_CHECKING, Tuple
 
 from dmoj import sysinfo
 from dmoj.judgeenv import get_runtime_versions, get_supported_problems_and_mtimes
-from dmoj.result import Result, TESTCASE_PREVIEW_MAX_BYTES, preview_bytes
+from dmoj.result import Result, TESTCASE_PREVIEW_MAX_BYTES, preview_bytes, preview_text
 from dmoj.utils.unicode import utf8bytes, utf8text
 
 if TYPE_CHECKING:
@@ -237,8 +237,8 @@ class PacketManager:
                             'total-points': result.total_points,
                             'memory': result.max_memory,
                             'output': result.output,
-                            'extended-feedback': result.extended_feedback,
-                            'feedback': result.feedback,
+                            'extended-feedback': preview_text(result.extended_feedback),
+                            'feedback': preview_text(result.feedback),
                             'voluntary-context-switches': result.context_switches[0],
                             'involuntary-context-switches': result.context_switches[1],
                             'runtime-version': result.runtime_version,
