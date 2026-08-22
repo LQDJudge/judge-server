@@ -10,7 +10,7 @@ from dmoj.executors import executors
 from dmoj.executors.base_executor import BaseExecutor
 from dmoj.graders.base import BaseGrader, SIGNATURE_GRADER_LANGUAGES
 from dmoj.problem import TestCase
-from dmoj.result import CheckerResult, Result
+from dmoj.result import CheckerResult, Result, TESTCASE_PREVIEW_MAX_BYTES
 from dmoj.utils.unicode import utf8bytes
 
 log = logging.getLogger('dmoj.graders')
@@ -61,12 +61,12 @@ class StandardGrader(BaseGrader):
         if not case.config['in'] or not case.config['out']:
             try:
                 data = case.input_data()
-                result.input_preview = data[:512] if data else b''
+                result.input_preview = data[: TESTCASE_PREVIEW_MAX_BYTES + 1] if data else b''
             except Exception:
                 result.input_preview = b''
             try:
                 data = case.output_data()
-                result.output_preview = data[:512] if data else b''
+                result.output_preview = data[: TESTCASE_PREVIEW_MAX_BYTES + 1] if data else b''
             except Exception:
                 result.output_preview = b''
 

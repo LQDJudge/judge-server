@@ -14,7 +14,7 @@ from typing import List, Optional, TYPE_CHECKING, Tuple
 
 from dmoj import sysinfo
 from dmoj.judgeenv import get_runtime_versions, get_supported_problems_and_mtimes
-from dmoj.result import Result
+from dmoj.result import Result, TESTCASE_PREVIEW_MAX_BYTES, preview_bytes
 from dmoj.utils.unicode import utf8bytes, utf8text
 
 if TYPE_CHECKING:
@@ -189,16 +189,34 @@ class PacketManager:
         self.judge.abort_grading()
         sys.exit(0)
 
-    PREVIEW_MAX_BYTES = 512
+    PREVIEW_MAX_BYTES = TESTCASE_PREVIEW_MAX_BYTES
 
-    @staticmethod
-    def _get_result_preview(result, field):
+    @classmethod
+    def _get_result_preview(cls, result, field):
+        preview_attr = 'input_preview' if field == 'input' else 'output_preview'
+        missing = object()
+        data = getattr(result, preview_attr, missing)
+        if data is not missing:
+            return preview_bytes(data, cls.PREVIEW_MAX_BYTES) if data else ''
+
         try:
-            data = result.input_preview if field == 'input' else result.output_preview
-            if not data:
+            filename = result.case.config['in'] if field == 'input' else result.case.config['out']
+        except (AttributeError, KeyError, TypeError):
+            filename = ''
+        if not filename:
+            try:
+                data_func = result.case.input_data if field == 'input' else result.case.output_data
+            except AttributeError:
                 return ''
-            return utf8text(data, 'replace')
-        except AttributeError:
+            try:
+                return preview_bytes(data_func()[: cls.PREVIEW_MAX_BYTES + 1], cls.PREVIEW_MAX_BYTES)
+            except Exception:
+                return ''
+
+        try:
+            with result.case.problem.problem_data.open(filename) as f:
+                return preview_bytes(f.read(cls.PREVIEW_MAX_BYTES + 1), cls.PREVIEW_MAX_BYTES)
+        except Exception:
             return ''
 
     def _flush_testcase_queue(self):

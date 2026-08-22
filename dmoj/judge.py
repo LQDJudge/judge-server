@@ -20,7 +20,7 @@ from dmoj.error import CompileError
 from dmoj.judgeenv import env, get_supported_problems_and_mtimes, startup_warnings
 from dmoj.monitor import Monitor
 from dmoj.problem import BaseTestCase, BatchedTestCase, Problem, TestCase
-from dmoj.result import Result
+from dmoj.result import Result, TESTCASE_PREVIEW_MAX_BYTES
 from dmoj.utils import builtin_int_patch
 from dmoj.utils.ansi import ansi_style, print_ansi, strip_ansi
 from dmoj.utils.unicode import unicode_stdout_stderr, utf8bytes, utf8text
@@ -445,6 +445,26 @@ class JudgeWorker:
         except Exception:
             logger.exception('Failed to send abort request to worker, did it race?')
 
+    @staticmethod
+    def _read_case_preview(case: TestCase, field: str) -> bytes:
+        try:
+            filename = case.config[field]
+        except (AttributeError, KeyError, TypeError):
+            return b''
+        if not filename:
+            return b''
+        try:
+            with case.problem.problem_data.open(filename) as f:
+                return f.read(TESTCASE_PREVIEW_MAX_BYTES + 1)
+        except Exception:
+            return b''
+
+    def _attach_case_previews(self, result: Result, case: TestCase) -> None:
+        if not hasattr(result, 'input_preview'):
+            result.input_preview = self._read_case_preview(case, 'in')
+        if not hasattr(result, 'output_preview'):
+            result.output_preview = self._read_case_preview(case, 'out')
+
     def _worker_process_main(
         self,
         judge_process_conn: 'multiprocessing.connection.Connection',
@@ -628,6 +648,7 @@ class JudgeWorker:
                         if is_min_batch and not result.points:
                             min_batch_short_circuit = True
 
+                self._attach_case_previews(result, case)
                 result.proc_output = utf8bytes(result.output)
 
                 if is_min_batch:

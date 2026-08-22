@@ -33,6 +33,7 @@ from dmoj.config import ConfigNode, InvalidInitException
 from dmoj.cptbox.utils import MemoryIO, MmapableIO
 from dmoj.error import InternalError
 from dmoj.judgeenv import env, get_problem_root
+from dmoj.result import TESTCASE_PREVIEW_MAX_BYTES
 from dmoj.utils.helper_files import compile_with_auxiliary_files, parse_helper_file_error
 from dmoj.utils.module import load_module_from_file
 from dmoj.utils.normalize import normalized_file_copy
@@ -310,7 +311,7 @@ class ProblemConfig(ConfigNode):
                 doc,
                 defaults={
                     'wall_time_factor': 3,
-                    'output_prefix_length': 128,
+                    'output_prefix_length': TESTCASE_PREVIEW_MAX_BYTES,
                     'output_limit_length': 25165824,
                     'binary_data': False,
                     'short_circuit': True,

@@ -9,6 +9,15 @@ if TYPE_CHECKING:
     from dmoj.executors.base_executor import BaseExecutor
     from dmoj.problem import TestCase
 
+TESTCASE_PREVIEW_MAX_BYTES = 512
+
+
+def preview_bytes(data: bytes, max_bytes: int = TESTCASE_PREVIEW_MAX_BYTES) -> str:
+    data = data or b''
+    if len(data) <= max_bytes:
+        return utf8text(data, 'replace')
+    return utf8text(data[:max_bytes], 'replace') + '...'
+
 
 class Result:
     AC = 0
@@ -79,10 +88,7 @@ class Result:
 
     @property
     def output(self) -> str:
-        result = utf8text(self.proc_output[: self.case.output_prefix_length], 'replace')
-        if len(self.proc_output) > self.case.output_prefix_length:
-            result += '...'
-        return result
+        return preview_bytes(self.proc_output, self.case.output_prefix_length)
 
     @classmethod
     def get_feedback_str(cls, error: bytes, process: 'TracedPopen', binary: 'BaseExecutor') -> str:
