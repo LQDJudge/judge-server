@@ -31,9 +31,9 @@ def check(
     files,
     case,
     lang='CPP17',
-    time_limit=env['generator_time_limit'],
+    time_limit=None,
     memory_limit=env['generator_memory_limit'],
-    compiler_time_limit=env['generator_compiler_limit'],
+    compiler_time_limit=env['generator_compiler_time_limit'],
     feedback=True,
     flags=None,
     type='default',
@@ -45,6 +45,9 @@ def check(
     storage_namespace=None,
     **kwargs,
 ) -> CheckerResult:
+
+    if time_limit is None:
+        time_limit = case.problem.time_limit
 
     flags = flags or []
     if lang == 'PAS':
