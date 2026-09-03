@@ -3,9 +3,9 @@ time: 2
 memory: 65536
 source: seed2.cpp
 cases: [WA, WA, AC, WA, WA]
-feedback_cases:
-  - "wrong answer interactor: too many guesses"
-  - "wrong answer interactor: too many guesses"
-  - "ok checker: ok"
-  - "wrong answer interactor: too many guesses"
-  - "wrong answer interactor: too many guesses"
+extended_feedback_cases:
+  - "wrong answer interactor: too many guesses\n"
+  - "wrong answer interactor: too many guesses\n"
+  - "ok checker: ok\n"
+  - "wrong answer interactor: too many guesses\n"
+  - "wrong answer interactor: too many guesses\n"

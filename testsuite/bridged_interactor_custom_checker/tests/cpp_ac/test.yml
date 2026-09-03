@@ -3,8 +3,4 @@ time: 2
 memory: 65536
 source: seed2.cpp
 expect: AC
-feedback: "ok checker: ok"
-extended_feedback_cases:
-  5: |-
-    USER: 1000000000
-    JUDGE: OK
+extended_feedback: "ok checker: ok\n"

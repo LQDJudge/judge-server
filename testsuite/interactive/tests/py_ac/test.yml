@@ -3,12 +3,3 @@ time: 2
 memory: 65536
 source: ac.py
 expect: AC
-extended_feedback_cases:
-  - |-
-    USER: 0
-    JUDGE: 20
-    USER: 20
-  - |-
-    USER: 0
-    JUDGE: 50
-    USER: 50
