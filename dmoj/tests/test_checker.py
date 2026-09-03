@@ -1,6 +1,7 @@
 import unittest
 from unittest import mock
 
+from dmoj.error import InternalError
 from dmoj.result import CheckerResult
 
 
@@ -140,3 +141,21 @@ class BridgedCheckerTest(unittest.TestCase):
         launched = self.run_bridged_checker(time_limit=3)
 
         self.assertEqual(launched['time'], 3)
+
+    def test_checker_timeout_propagates_as_internal_error(self):
+        from dmoj.contrib.lqdoj import ContribModule
+
+        process = mock.Mock(returncode=-9, is_tle=True)
+
+        with self.assertRaisesRegex(InternalError, r'checker timed out \(> 3 seconds\)'):
+            ContribModule.parse_return_code(
+                process,
+                mock.Mock(),
+                1,
+                3,
+                65536,
+                '',
+                '',
+                'checker',
+                b'',
+            )

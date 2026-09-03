@@ -1,8 +1,6 @@
 from typing import Any, TYPE_CHECKING
 
-from dmoj.error import InternalError
 from dmoj.executors.base_executor import BaseExecutor
-from dmoj.result import CheckerResult
 
 if TYPE_CHECKING:
     from dmoj.cptbox import TracedPopen
@@ -14,19 +12,10 @@ class BaseContribModule:
     WA = 1
 
     def catch_internal_error(f: Any) -> Any:
-        def wrapper(*args, **kwargs) -> CheckerResult:
-            try:
-                return f(*args, **kwargs)
-            except InternalError as e:
-                proc = args[1]
-                return CheckerResult(
-                    False,
-                    0,
-                    feedback=f'Checker exitcode {proc.returncode}',
-                    extended_feedback=str(e),
-                )
-
-        return wrapper
+        # Checker/helper failures are judge infrastructure errors, not wrong
+        # answers. Let InternalError reach the judge worker so the site receives
+        # an internal-error packet instead of a failed CheckerResult.
+        return f
 
     @classmethod
     def get_checker_args_format_string(cls) -> str:
