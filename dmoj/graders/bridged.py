@@ -2,7 +2,6 @@ import os
 import random
 import shlex
 import subprocess
-import threading
 from typing import TYPE_CHECKING
 
 from dmoj.checkers import CheckerOutput
@@ -14,13 +13,8 @@ from dmoj.executors.base_executor import BaseExecutor
 from dmoj.graders.standard import StandardGrader
 from dmoj.judgeenv import env, get_problem_root
 from dmoj.problem import Problem, TestCase
-from dmoj.result import CheckerResult, Result
+from dmoj.result import Result
 from dmoj.utils.helper_files import compile_with_auxiliary_files, mktemp
-from dmoj.utils.interactive_feedback import (
-    InteractiveTranscript,
-    attach_interaction_transcript,
-    proxy_interaction_stream,
-)
 from dmoj.utils.unicode import utf8text
 
 if TYPE_CHECKING:
@@ -61,43 +55,30 @@ class BridgedInteractiveGrader(StandardGrader):
             name='interactor',
             stderr=self._interactor_stderr,
         )
-        attach_interaction_transcript(
-            parsed_result,
-            self._interaction_transcript.render(),
-            case.output_prefix_length,
-        )
 
         if result.result_flag:
             return False
 
         if parsed_result.passed and (case.config['checker'] or 'standard') != 'standard':
             # Run the custom checker iff a custom checker is specified and the interactor returns a passed verdict.
-            check = super().check_result(case, result)
-            if isinstance(check, CheckerResult):
-                attach_interaction_transcript(
-                    check,
-                    self._interaction_transcript.render(),
-                    case.output_prefix_length,
-                )
-            return check
+            return super().check_result(case, result)
 
         return parsed_result
 
     def _launch_process(self, case: TestCase, input_file=None) -> None:
-        self._interaction_transcript = InteractiveTranscript(max_length=case.output_prefix_length)
-        self._submission_stdout_read, submission_stdout_write = os.pipe()
-        submission_stdin_read, self._submission_stdin_write = os.pipe()
+        self._interactor_stdin_pipe, submission_stdout_pipe = os.pipe()
+        submission_stdin_pipe, self._interactor_stdout_pipe = os.pipe()
         self._current_proc = self.binary.launch(
             time=self.problem.time_limit,
             memory=self.problem.memory_limit,
             symlinks=case.config.symlinks,
-            stdin=submission_stdin_read,
-            stdout=submission_stdout_write,
+            stdin=submission_stdin_pipe,
+            stdout=submission_stdout_pipe,
             stderr=subprocess.PIPE,
             wall_time=case.config.wall_time_factor * self.problem.time_limit,
         )
-        os.close(submission_stdin_read)
-        os.close(submission_stdout_write)
+        os.close(submission_stdin_pipe)
+        os.close(submission_stdout_pipe)
 
     def _interact_with_process(self, case: TestCase, result: Result) -> bytes:
         assert self._current_proc is not None
@@ -114,8 +95,6 @@ class BridgedInteractiveGrader(StandardGrader):
 
         with mktemp(judge_output) as answer_file:
             input_path = case.input_data_io().to_path()
-            interactor_stdin_read, interactor_stdin_write = os.pipe()
-            interactor_stdout_read, interactor_stdout_write = os.pipe()
 
             # Take advantage of File IO to support log file (required by testlib).
             # Collision is not a concern here because the log file, which is just a symlink to /dev/fd/4,
@@ -133,43 +112,18 @@ class BridgedInteractiveGrader(StandardGrader):
                 *interactor_args,
                 time=self._interactor_time_limit,
                 memory=self._interactor_memory_limit,
-                stdin=interactor_stdin_read,
-                stdout=interactor_stdout_write,
+                stdin=self._interactor_stdin_pipe,
+                stdout=self._interactor_stdout_pipe,
                 stderr=subprocess.PIPE,
                 file_io=ConfigNode({'output': interactor_log_file}),
                 extra_fs=[ExactFile(input_path)],
             )
 
-            os.close(interactor_stdin_read)
-            os.close(interactor_stdout_write)
-            interaction_proxy_threads = [
-                threading.Thread(
-                    target=proxy_interaction_stream,
-                    args=(
-                        self._submission_stdout_read,
-                        interactor_stdin_write,
-                        'USER',
-                        self._interaction_transcript,
-                    ),
-                ),
-                threading.Thread(
-                    target=proxy_interaction_stream,
-                    args=(
-                        interactor_stdout_read,
-                        self._submission_stdin_write,
-                        'JUDGE',
-                        self._interaction_transcript,
-                    ),
-                ),
-            ]
-            for thread in interaction_proxy_threads:
-                thread.start()
+            os.close(self._interactor_stdin_pipe)
+            os.close(self._interactor_stdout_pipe)
 
             result.proc_output, self._interactor_stderr = self._interactor.communicate()
-            for thread in interaction_proxy_threads:
-                thread.join()
             self._current_proc.wait()
-            result.extended_feedback = self._interaction_transcript.render()
 
             return self._current_proc.stderr.read()
 
