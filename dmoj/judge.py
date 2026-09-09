@@ -318,7 +318,8 @@ class Judge:
                         validate_id, data['passed'], data['total'], data['failed'],
                     )
                 elif event_type == 'skip':
-                    pass
+                    # Every remote validation needs a terminal packet to release the bridge reservation.
+                    self.packet_manager.validate_error_packet(validate_id, data['reason'])
                 elif event_type in ('error', 'compile-error'):
                     self.packet_manager.validate_error_packet(
                         validate_id, data.get('error', 'Unknown error'),
