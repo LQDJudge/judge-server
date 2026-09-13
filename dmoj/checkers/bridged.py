@@ -43,6 +43,7 @@ def check(
     output_name=None,
     treat_checker_points_as_percentage=False,
     storage_namespace=None,
+    treat_checker_points_as_fraction=False,
     **kwargs,
 ) -> CheckerResult:
 
@@ -150,4 +151,5 @@ def check(
             name='checker',
             stderr=error,
             treat_checker_points_as_percentage=treat_checker_points_as_percentage,
+            treat_checker_points_as_fraction=treat_checker_points_as_fraction,
         )
