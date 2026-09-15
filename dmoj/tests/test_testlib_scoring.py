@@ -22,11 +22,11 @@ class TestlibScoringTests(unittest.TestCase):
             **options,
         )
 
-    def test_fraction_scales_to_case_points(self):
+    def test_fraction_is_default_and_scales_to_case_points(self):
         for point_value in (0, 0.2, 1, 10, 18, 20, 70, 100):
             for score in (b'0', b'0.5', b'1', b'5e-1'):
                 with self.subTest(point_value=point_value, score=score):
-                    result = self.parse(score, point_value, treat_checker_points_as_fraction=True)
+                    result = self.parse(score, point_value)
                     self.assertAlmostEqual(result.points, float(score) * point_value)
                     self.assertTrue(result.passed)
                     self.assertEqual(result.feedback, 'feedback')
@@ -36,14 +36,16 @@ class TestlibScoringTests(unittest.TestCase):
         for score in (b'-0.1', b'1.01', b'50', b'1e999', b'nan', b'inf', b'garbage'):
             with self.subTest(score=score):
                 with self.assertRaises(InternalError):
-                    self.parse(score, treat_checker_points_as_fraction=True)
+                    self.parse(score)
 
-    def test_absolute_mode_is_still_the_default(self):
-        self.assertEqual(self.parse(b'0.5').points, 0.5)
-        self.assertEqual(self.parse(b'15').points, 15)
-        self.assertEqual(self.parse(b'0.5', treat_checker_points_as_fraction=False).points, 0.5)
+    def test_explicit_absolute_mode_is_preserved_for_legacy_problems(self):
+        self.assertEqual(self.parse(b'0.5', treat_checker_points_as_absolute=True).points, 0.5)
+        self.assertEqual(self.parse(b'15', treat_checker_points_as_absolute=True).points, 15)
         with self.assertRaises(InternalError):
-            self.parse(b'21')
+            self.parse(b'21', treat_checker_points_as_absolute=True)
+
+    def test_explicit_fraction_mode_remains_compatible(self):
+        self.assertEqual(self.parse(b'0.5', treat_checker_points_as_fraction=True).points, 10)
 
     def test_percentage_mode_is_unchanged(self):
         for score, expected in ((b'0', 0), (b'0.5', 0.1), (b'50', 10), (b'100', 20)):
@@ -53,11 +55,21 @@ class TestlibScoringTests(unittest.TestCase):
             self.parse(b'101', treat_checker_points_as_percentage=True)
 
     def test_conflicting_score_modes_raise_internal_error(self):
-        with self.assertRaisesRegex(InternalError, 'cannot both be enabled'):
-            self.parse(b'0.5', treat_checker_points_as_fraction=True, treat_checker_points_as_percentage=True)
+        for options in (
+            {'treat_checker_points_as_fraction': True, 'treat_checker_points_as_percentage': True},
+            {'treat_checker_points_as_fraction': True, 'treat_checker_points_as_absolute': True},
+            {'treat_checker_points_as_percentage': True, 'treat_checker_points_as_absolute': True},
+        ):
+            with self.assertRaisesRegex(InternalError, 'mutually exclusive'):
+                self.parse(b'0.5', **options)
 
     def test_binary_verdicts_are_unchanged(self):
-        for options in ({}, {'treat_checker_points_as_fraction': True}, {'treat_checker_points_as_percentage': True}):
+        for options in (
+            {},
+            {'treat_checker_points_as_fraction': True},
+            {'treat_checker_points_as_percentage': True},
+            {'treat_checker_points_as_absolute': True},
+        ):
             for code, passed, points in ((0, True, 20), (1, False, 0), (2, False, 0)):
                 with self.subTest(options=options, code=code):
                     result = self.parse(b'', returncode=code, **options)
@@ -79,9 +91,10 @@ class TestlibScoringTests(unittest.TestCase):
             bridged.contrib_modules, {'testlib': SimpleNamespace(ContribModule=ContribModule)}
         ):
             for options, expected in (
-                ({}, 0.5),
+                ({}, 10),
                 ({'treat_checker_points_as_fraction': True}, 10),
                 ({'treat_checker_points_as_percentage': True}, 0.1),
+                ({'treat_checker_points_as_absolute': True}, 0.5),
             ):
                 with self.subTest(options=options):
                     result = bridged.check(
