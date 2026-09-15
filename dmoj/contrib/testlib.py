@@ -44,39 +44,25 @@ class ContribModule(DefaultContribModule):
         name: str,
         stderr: bytes,
         treat_checker_points_as_percentage: bool = False,
-        treat_checker_points_as_absolute: bool = False,
         treat_checker_points_as_fraction: bool = False,
         **kwargs,
     ):
         if proc.returncode == cls.AC:
             return CheckerResult(True, point_value, feedback=feedback, extended_feedback=extended_feedback)
         elif proc.returncode == cls.PARTIAL:
-            enabled_modes = sum(
-                (
-                    treat_checker_points_as_absolute,
-                    treat_checker_points_as_fraction,
-                    treat_checker_points_as_percentage,
-                )
-            )
-            if enabled_modes > 1:
-                raise InternalError('Testlib absolute, fraction, and percentage modes are mutually exclusive')
+            if treat_checker_points_as_fraction and treat_checker_points_as_percentage:
+                raise InternalError('Testlib fraction and percentage modes cannot both be enabled')
 
             match = cls.repartial.search(stderr)
             if not match:
                 raise InternalError('Invalid stderr for partial points: %r' % stderr)
 
-            if treat_checker_points_as_absolute:
-                points = float(match.group(1))
-                if not 0 <= points <= point_value:
-                    raise InternalError(
-                        'Invalid absolute points: %s, must be between [0; %s]' % (utf8text(match.group(1)), point_value)
-                    )
-            elif treat_checker_points_as_fraction or not treat_checker_points_as_percentage:
+            if treat_checker_points_as_fraction:
                 fraction = float(match.group(1))
                 if not 0 <= fraction <= 1:
                     raise InternalError('Invalid point fraction: %s, must be between [0; 1]' % utf8text(match.group(1)))
                 points = fraction * point_value
-            else:
+            elif treat_checker_points_as_percentage:
                 percentage = float(match.group(1))
 
                 if not 0 <= percentage <= 100:
@@ -85,6 +71,13 @@ class ContribModule(DefaultContribModule):
                     )
 
                 points = percentage * point_value / 100
+            else:
+                points = float(match.group(1))
+
+                if not 0 <= points <= point_value:
+                    raise InternalError(
+                        'Invalid partial points: %f, must be between [%f; %f]' % (points, 0, point_value)
+                    )
 
             return CheckerResult(True, points, feedback=feedback, extended_feedback=extended_feedback)
         elif proc.returncode == cls.WA:
