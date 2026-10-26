@@ -1,6 +1,7 @@
 import os
 import signal
 import tempfile
+from io import BytesIO
 from typing import IO, List, Optional, Sequence, TYPE_CHECKING
 
 import requests
@@ -126,24 +127,27 @@ def download_source_code(link, file_size_limit):
     file_size_limit = file_size_limit * 1024 * 1024
 
     try:
-        r = requests.get(link, stream=True)
-        r.raise_for_status()
+        r = requests.get(link, stream=True, timeout=(5, 15))
     except Exception as e:
         raise CompileError(repr(e))
-
-    if int(r.headers.get('Content-Length', 0)) > file_size_limit:
-        raise CompileError(f"Response size ({r.headers.get('Content-Length')}) is larger than file size limit")
-
-    size = 0
-    content = b''
-
-    for chunk in r.iter_content(1024 * 1024):
-        size += len(chunk)
-        content += chunk
-        if size > file_size_limit:
-            raise CompileError('response too large')
-
-    return content
+    try:
+        r.raise_for_status()
+        if int(r.headers.get('Content-Length', 0)) > file_size_limit:
+            raise CompileError(f"Response size ({r.headers.get('Content-Length')}) is larger than file size limit")
+        size = 0
+        with BytesIO() as content:
+            for chunk in r.iter_content(1024 * 1024):
+                size += len(chunk)
+                if size > file_size_limit:
+                    raise CompileError('response too large')
+                content.write(chunk)
+            return content.getvalue()
+    except CompileError:
+        raise
+    except Exception as error:
+        raise CompileError(repr(error)) from error
+    finally:
+        r.close()
 
 
 class FunctionTimeout:

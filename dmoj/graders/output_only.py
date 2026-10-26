@@ -1,7 +1,8 @@
+import hashlib
 import time
 from io import BytesIO
 from typing import TYPE_CHECKING
-from zipfile import BadZipFile, ZipFile
+from zipfile import BadZipFile, ZipFile, ZIP_LZMA
 
 from dmoj.error import CompileError
 from dmoj.executors import executors
@@ -46,9 +47,22 @@ class OutputOnlyGrader(StandardGrader):
 
     def get_zip_file(self) -> ZipFile:
         fize_size_limit = self.problem.config.fize_size_limit or 1
-        zip_data = download_source_code(utf8text(self.source).strip(), fize_size_limit)
         try:
-            return ZipFile(BytesIO(zip_data))
+            # This happens before contestant scoring and its resource limits.
+            # The wall deadline also bounds peers that trickle bytes forever.
+            with FunctionTimeout(seconds=30):
+                zip_data = download_source_code(utf8text(self.source).strip(), fize_size_limit)
+        except TimeoutError as error:
+            raise CompileError('Timed out downloading the output archive') from error
+        self.output_artifact_sha256 = hashlib.sha256(zip_data).hexdigest()
+        try:
+            archive = ZipFile(BytesIO(zip_data))
+            if any(item.compress_type == ZIP_LZMA or item.flag_bits & 1 for item in archive.infolist()):
+                archive.close()
+                raise CompileError(
+                    'LZMA-compressed or encrypted output ZIPs are not supported; use an unencrypted Deflate or stored ZIP'
+                )
+            return archive
         except BadZipFile as e:
             raise CompileError(repr(e))
 
