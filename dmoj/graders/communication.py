@@ -1,5 +1,4 @@
 import os
-import shlex
 import shutil
 import stat
 import subprocess
@@ -20,7 +19,7 @@ from dmoj.graders.standard import StandardGrader
 from dmoj.judgeenv import env, get_problem_root
 from dmoj.problem import Problem, TestCase
 from dmoj.result import Result
-from dmoj.utils.helper_files import compile_with_auxiliary_files
+from dmoj.utils.helper_files import compile_with_auxiliary_files, parse_helper_file_error
 from dmoj.utils.unicode import utf8bytes, utf8text
 
 if TYPE_CHECKING:
@@ -106,13 +105,11 @@ class CommunicationGrader(StandardGrader):
             result.result_flag |= Result.TLE
 
     def check_result(self, case: TestCase, result: Result) -> CheckerOutput:
-        if (case.config['checker'] or 'standard') != 'standard':
-            return super().check_result(case, result)
-
-        if result.result_flag:
-            return False
-
-        return contrib_modules[self.contrib_type].ContribModule.parse_return_code(
+        # Preserve manager failures even when they cause contestant EOF/RTE.
+        if self.contrib_type == 'cms' and self._manager_proc.returncode:
+            parse_helper_file_error(self._manager_proc, self._manager_binary, 'manager', self._manager_stderr,
+                                    self._manager_time_limit, self._manager_memory_limit)
+        parsed = contrib_modules[self.contrib_type].ContribModule.parse_return_code(
             self._manager_proc,
             self._manager_binary,
             case.points,
@@ -123,6 +120,11 @@ class CommunicationGrader(StandardGrader):
             name='manager',
             stderr=self._manager_stderr,
         )
+        if result.result_flag:
+            return False
+        if parsed.passed and (case.config['checker'] or 'standard') != 'standard':
+            return super().check_result(case, result)
+        return parsed
 
     def _open_user_fifos(self, i: int) -> Tuple[int, int, bool]:
         """Open the (stdin, stdout) FIFO fds for user process ``i``.
@@ -259,8 +261,8 @@ class CommunicationGrader(StandardGrader):
             manager_args = []
             for i in indices:
                 manager_args += [
-                    shlex.quote(self._fifo_user_to_manager[i]),
-                    shlex.quote(self._fifo_manager_to_user[i]),
+                    self._fifo_user_to_manager[i],
+                    self._fifo_manager_to_user[i],
                 ]
 
             # https://github.com/cms-dev/cms/blob/v1.4/cms/grading/tasktypes/Communication.py#L319-L320

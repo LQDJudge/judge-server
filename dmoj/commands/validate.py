@@ -1,4 +1,5 @@
 import os
+import hashlib
 import shlex
 import subprocess
 from itertools import groupby
@@ -143,6 +144,7 @@ def validate_problem_cases(problem_id: str) -> Generator[Tuple[str, dict], None,
 
             yield ('case', {
                 'case': case_number,
+                'input_sha256': hashlib.sha256(input).hexdigest(),
                 'batch': batch_number,
                 'status': status,
                 'feedback': feedback or '',
