@@ -1,4 +1,3 @@
-import hashlib
 import time
 from io import BytesIO
 from typing import TYPE_CHECKING
@@ -54,7 +53,6 @@ class OutputOnlyGrader(StandardGrader):
                 zip_data = download_source_code(utf8text(self.source).strip(), fize_size_limit)
         except TimeoutError as error:
             raise CompileError('Timed out downloading the output archive') from error
-        self.output_artifact_sha256 = hashlib.sha256(zip_data).hexdigest()
         try:
             archive = ZipFile(BytesIO(zip_data))
             if any(item.compress_type == ZIP_LZMA or item.flag_bits & 1 for item in archive.infolist()):

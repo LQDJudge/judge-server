@@ -109,14 +109,13 @@ class _BoundedProcess:
 def sandbox_executor(runtime, cancel_event=None):
     """Internal primitive: callers select registered runtimes, never host commands.
 
-    Review adapters may supply frozen auxiliary files/argv; the public invocation
-    schema cannot. Runtime/compile environment restrictions are shared by both.
+    Runtime and compilation restrictions are shared by both callers.
     """
     if runtime not in executors.executors:
         raise InternalError('Requested sandbox runtime unavailable')
     module = executors.executors[runtime]
     base_executor = import_module('dmoj.executors.base_executor').BaseExecutor
-    java = runtime in ('JAVA', 'JAVA8', 'JAVA9', 'JAVA10', 'JAVA11', 'JAVA15', 'JAVA17')
+    java = runtime in ('JAVA', 'JAVA8')
 
     class InvocationExecutor(module.Executor):
         address_grace = 2097152 if java else module.Executor.address_grace
@@ -242,10 +241,9 @@ class CapturedExecution(NamedTuple):
         }
 
 
-def run_process(executor, raw, *, limits, args=(), extra_fs=(), cancel_event=None):
-    """Internal trusted adapter, with bounded pipes and deterministic cleanup."""
+def run_process(executor, raw, *, limits, cancel_event=None):
+    """Run with bounded pipes and deterministic cleanup."""
     process = executor.launch(
-        *args,
         time=limits['cpu_seconds'],
         memory=limits['memory_kib'],
         wall_time=limits['wall_seconds'],
@@ -253,7 +251,7 @@ def run_process(executor, raw, *, limits, args=(), extra_fs=(), cancel_event=Non
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         nproc=1,
-        extra_fs=list(extra_fs)
+        extra_fs=[],
     )
     output, error, status = b'', b'', None
     try:

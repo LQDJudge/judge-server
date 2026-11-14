@@ -1,5 +1,4 @@
 import errno
-import hashlib
 import json
 import logging
 import os
@@ -14,7 +13,6 @@ import zlib
 from typing import List, Optional, TYPE_CHECKING, Tuple
 
 from dmoj import sysinfo
-from dmoj.review_provenance import attest_package
 from dmoj.judgeenv import get_runtime_versions, get_supported_problems_and_mtimes
 from dmoj.result import Result, TESTCASE_PREVIEW_MAX_BYTES, preview_bytes, preview_text
 from dmoj.utils.unicode import utf8bytes, utf8text
@@ -290,10 +288,6 @@ class PacketManager:
         elif name == 'get-current-submission':
             self.current_submission_packet()
         elif name == 'submission-request':
-            self._review_binding = packet.get('review-binding', {})
-            self._review_case_hashes = []
-            self._review_initial = attest_package(packet['problem-id'], self._review_binding,
-                                                  hashlib.sha256(packet['source'].encode()).hexdigest())
             self.submission_acknowledged_packet(packet['submission-id'])
             from dmoj.judge import Submission
 
@@ -307,7 +301,7 @@ class PacketManager:
                     time_limit=float(packet['time-limit']),
                     memory_limit=int(packet['memory-limit']),
                     short_circuit=packet['short-circuit'],
-                    meta={**packet['meta'], 'review-evidence': bool(self._review_binding)},
+                    meta=packet['meta'],
                 )
             )
             self._batch = 0
@@ -323,17 +317,14 @@ class PacketManager:
             self.judge.begin_custom_invocation(packet.get('request-id'), packet.get('request'))
         elif name == 'terminate-custom-invocation':
             self.judge.cancel_custom_invocation(packet.get('request-id'))
-        elif name == 'terminate-review-evidence':
-            if packet.get('validate-id') == self.judge._current_validate_id:
-                event = getattr(self.judge, '_review_cancel_event', None)
-                if event is not None:
-                    event.set()
+        elif name == 'test-statistics-request':
+            self.judge.begin_test_statistics(packet.get('request-id'), packet.get('request'))
+        elif name == 'terminate-test-statistics':
+            self.judge.cancel_test_statistics(packet.get('request-id'))
         elif name == 'validate-request':
             self.judge.begin_validation(
                 validate_id=packet['validate-id'],
                 problem_id=packet['problem-id'],
-                review_job=packet.get('review-job'),
-                review_binding=packet.get('review-binding', {}),
             )
         elif name == 'update-problems':
             log.info('Received update-problems request, rescanning...')
@@ -345,8 +336,17 @@ class PacketManager:
             log.error('Unknown packet %s, payload %s', name, packet)
 
     def handshake(self, problems: str, runtimes, id: str, key: str):
-        self._send_packet({'name': 'handshake', 'problems': problems, 'executors': runtimes, 'id': id, 'key': key,
-                           'review-evidence-protocol': 2, 'custom-invocation-protocol': 1})
+        self._send_packet(
+            {
+                'name': 'handshake',
+                'problems': problems,
+                'executors': runtimes,
+                'id': id,
+                'key': key,
+                'test-statistics-protocol': 1,
+                'custom-invocation-protocol': 1,
+            }
+        )
         log.info('Awaiting handshake response: [%s]:%s', self.host, self.port)
         try:
             data = self.input.read(PacketManager.SIZE_PACK.size)
@@ -366,9 +366,6 @@ class PacketManager:
         self._send_packet({'name': 'supported-problems', 'problems': problems})
 
     def test_case_status_packet(self, position: int, result: Result):
-        self._review_case_hashes.append({'case': position, 'batch': result.case.batch or None,
-                                        'input_sha256': getattr(result, 'input_sha256', None),
-                                        'answer_sha256': getattr(result, 'answer_sha256', None)})
         log.debug(
             'Test case on %d: #%d, %s [%.3fs | %.2f MB], %.1f/%.0f',
             self.judge.current_submission.id,
@@ -408,21 +405,11 @@ class PacketManager:
             {'name': 'grading-begin', 'submission-id': self.judge.current_submission.id, 'pretested': is_pretested}
         )
 
-    def grading_end_packet(self, output_artifact_sha256=None):
+    def grading_end_packet(self):
         log.debug('End grading: %d', self.judge.current_submission.id)
         self.fallback = 4
         self._flush_testcase_queue()
-        evidence = attest_package(self.judge.current_submission.problem_id, getattr(self, '_review_binding', {}),
-                                  hashlib.sha256(self.judge.current_submission.source.encode()).hexdigest())
-        evidence['case_manifest'] = getattr(self, '_review_case_hashes', [])
-        initial = getattr(self, '_review_initial', {})
-        if getattr(self, '_review_binding', {}).get('output_artifact_sha256'):
-            evidence['output_artifact_sha256'] = output_artifact_sha256
-            if output_artifact_sha256 != self._review_binding['output_artifact_sha256']:
-                evidence['artifacts_verified'] = False
-        if evidence and (not initial.get('artifacts_verified') or initial.get('observed_artifacts') != evidence.get('observed_artifacts')):
-            evidence['artifacts_verified'] = False
-        self._send_packet({'name': 'grading-end', 'submission-id': self.judge.current_submission.id, 'review-evidence': evidence})
+        self._send_packet({'name': 'grading-end', 'submission-id': self.judge.current_submission.id})
 
     def batch_begin_packet(self):
         self._batch += 1
@@ -461,8 +448,8 @@ class PacketManager:
             'total-cases': total_cases,
         })
 
-    def review_evidence_result_packet(self, validate_id, result):
-        self._send_packet({'name': 'review-evidence-result', 'validate-id': validate_id, 'result': result})
+    def test_statistics_result_packet(self, request_id, result):
+        self._send_packet({'name': 'test-statistics-result', 'request-id': request_id, 'result': result})
 
     def custom_invocation_result_packet(self, request_id, result):
         self._send_packet({'name': 'custom-invocation-result', 'request-id': request_id, 'result': result})
@@ -477,10 +464,9 @@ class PacketManager:
             'feedback': feedback,
         })
 
-    def validate_end_packet(self, validate_id: str, passed: bool, total: int, failed: int, review_evidence=None):
+    def validate_end_packet(self, validate_id: str, passed: bool, total: int, failed: int):
         self._send_packet({
             'name': 'validate-end',
-            'review-evidence': review_evidence or {},
             'validate-id': validate_id,
             'passed': passed,
             'total': total,

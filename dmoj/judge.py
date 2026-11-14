@@ -1,6 +1,5 @@
 #!/usr/bin/python
 import copy
-import hashlib
 import logging
 import multiprocessing
 import os
@@ -17,8 +16,7 @@ from typing import Any, Callable, Dict, Generator, List, NamedTuple, Optional, S
 
 from dmoj import packet
 from dmoj.custom_invocation import run_custom_invocation, valid_request_id, validate_request
-from dmoj.review_evidence import run_review_job
-from dmoj.review_provenance import attest_package
+from dmoj.test_statistics import run_test_statistics, validate_request as validate_statistics_request
 from dmoj.control import JudgeControlRequestHandler
 from dmoj.error import CompileError
 from dmoj.judgeenv import env, get_supported_problems_and_mtimes, startup_warnings
@@ -85,6 +83,9 @@ class Judge:
         self._current_invocation_id: Optional[str] = None
         self._invocation_cancel_event = threading.Event()
         self._invocation_thread = None
+        self._current_statistics_id = None
+        self._statistics_cancel_event = threading.Event()
+        self._statistics_thread = None
         self._grading_lock = threading.Lock()
 
         self.updater_exit = False
@@ -224,11 +225,8 @@ class Judge:
     def _ipc_grading_begin(self, _report, is_pretested: bool) -> None:
         self.packet_manager.begin_grading_packet(is_pretested)
 
-    def _ipc_grading_end(self, _report, output_artifact_sha256=None) -> None:
-        if output_artifact_sha256:
-            self.packet_manager.grading_end_packet(output_artifact_sha256)
-        else:
-            self.packet_manager.grading_end_packet()
+    def _ipc_grading_end(self, _report) -> None:
+        self.packet_manager.grading_end_packet()
         self.submissions_graded += 1
 
     def _ipc_result(self, report, batch_number: Optional[int], case_number: int, result: Result) -> None:
@@ -297,7 +295,9 @@ class Judge:
         try:
             validate_request(request)
         except (TypeError, ValueError):
-            self.packet_manager.custom_invocation_result_packet(request_id, {'protocol': 1, 'status': 'INVALID_REQUEST'})
+            self.packet_manager.custom_invocation_result_packet(
+                request_id, {'protocol': 1, 'status': 'INVALID_REQUEST'}
+            )
             return
         if not self._grading_lock.acquire(blocking=False):
             self.packet_manager.custom_invocation_result_packet(request_id, {'protocol': 1, 'status': 'BUSY'})
@@ -332,7 +332,60 @@ class Judge:
             self._invocation_thread = None
             self._grading_lock.release()
 
-    def begin_validation(self, validate_id: str, problem_id: str, report=logger.info, review_job=None, review_binding=None) -> None:
+    def begin_test_statistics(self, request_id, request):
+        if not valid_request_id(request_id):
+            self.packet_manager.test_statistics_result_packet(None, {'protocol': 1, 'status': 'invalid_request'})
+            return
+        try:
+            validate_statistics_request(request)
+        except (ValueError, TypeError, UnicodeError, AttributeError):
+            self.packet_manager.test_statistics_result_packet(request_id, {'protocol': 1, 'status': 'invalid_request'})
+            return
+        correlation = {'protocol': 1, 'phase_id': request['phase_id'], 'attempt_token': request['attempt_token']}
+        if not self._grading_lock.acquire(blocking=False):
+            self.packet_manager.test_statistics_result_packet(
+                request_id, {**correlation, 'status': 'infrastructure_error', 'error': 'Judge is busy'}
+            )
+            return
+        self._current_statistics_id = request_id
+        self._statistics_cancel_event = threading.Event()
+        self._statistics_thread = threading.Thread(
+            target=self._statistics_thread_main, args=(request_id, request), daemon=True
+        )
+        try:
+            self._statistics_thread.start()
+        except Exception:
+            self._current_statistics_id = self._statistics_thread = None
+            self._grading_lock.release()
+            logger.exception('Could not start test statistics')
+            self.packet_manager.test_statistics_result_packet(
+                request_id,
+                {**correlation, 'status': 'infrastructure_error', 'error': 'Judge could not start execution'},
+            )
+
+    def cancel_test_statistics(self, request_id):
+        if valid_request_id(request_id) and request_id == self._current_statistics_id:
+            self._statistics_cancel_event.set()
+
+    def _statistics_thread_main(self, request_id, request):
+        try:
+            try:
+                result = run_test_statistics(request, self._statistics_cancel_event)
+            except Exception:
+                logger.exception('Unhandled test statistics error')
+                result = {
+                    'protocol': 1,
+                    'phase_id': request['phase_id'],
+                    'attempt_token': request['attempt_token'],
+                    'status': 'infrastructure_error',
+                    'error': 'Judge execution failed',
+                }
+            self.packet_manager.test_statistics_result_packet(request_id, result)
+        finally:
+            self._current_statistics_id = self._statistics_thread = None
+            self._grading_lock.release()
+
+    def begin_validation(self, validate_id: str, problem_id: str, report=logger.info) -> None:
         self._grading_lock.acquire()
 
         report(
@@ -342,10 +395,9 @@ class Judge:
         )
 
         self._current_validate_id = validate_id
-        self._review_cancel_event = threading.Event()
         thread = threading.Thread(
             target=self._validation_thread_main,
-            args=(validate_id, problem_id, report, review_job, review_binding),
+            args=(validate_id, problem_id, report),
             daemon=True,
         )
         try:
@@ -355,32 +407,21 @@ class Judge:
             self._grading_lock.release()
             raise
 
-    def _validation_thread_main(self, validate_id: str, problem_id: str, report, review_job=None, review_binding=None) -> None:
+    def _validation_thread_main(self, validate_id: str, problem_id: str, report) -> None:
         from dmoj.commands.validate import validate_problem_cases
 
         try:
-            if review_job is not None:
-                self.packet_manager.review_evidence_result_packet(validate_id, run_review_job(review_job, self._review_cancel_event))
-                return
-            initial = attest_package(problem_id, review_binding)
-            case_manifest = []
             for event_type, data in validate_problem_cases(problem_id):
                 if event_type == 'begin':
                     self.packet_manager.validate_begin_packet(validate_id, data['total_cases'])
                 elif event_type == 'case':
-                    case_manifest.append({'case': data['case'], 'batch': data['batch'], 'input_sha256': data.get('input_sha256')})
                     self.packet_manager.validate_case_packet(
                         validate_id, data['case'], data['batch'],
                         data['status'], data['feedback'],
                     )
                 elif event_type == 'end':
-                    evidence = attest_package(problem_id, review_binding)
-                    evidence['case_manifest'] = case_manifest
-                    if evidence and (not initial.get('artifacts_verified') or initial.get('observed_artifacts') != evidence.get('observed_artifacts')):
-                        evidence['artifacts_verified'] = False
                     self.packet_manager.validate_end_packet(
                         validate_id, data['passed'], data['total'], data['failed'],
-                        review_evidence=evidence,
                     )
                 elif event_type == 'skip':
                     # Every remote validation needs a terminal packet to release the bridge reservation.
@@ -397,14 +438,7 @@ class Judge:
         except Exception:
             logger.exception('Unhandled exception during validation')
             try:
-                if review_job is not None:
-                    self.packet_manager.review_evidence_result_packet(validate_id, {
-                        'snapshot_hash': review_job.get('snapshot_hash'),
-                        'payload_hash': review_job.get('payload_hash'),
-                        'infrastructure_error': 'Judge evidence execution failed',
-                    })
-                else:
-                    self.packet_manager.validate_error_packet(validate_id, traceback.format_exc())
+                self.packet_manager.validate_error_packet(validate_id, traceback.format_exc())
             except Exception:
                 pass
         finally:
@@ -422,6 +456,10 @@ class Judge:
         """
         End any submission currently executing, and exit the judge.
         """
+        self._statistics_cancel_event.set()
+        statistics_thread = self._statistics_thread
+        if statistics_thread is not None and statistics_thread is not threading.current_thread():
+            statistics_thread.join(timeout=5)
         self._invocation_cancel_event.set()
         thread = self._invocation_thread
         if thread is not None and thread is not threading.current_thread():
@@ -704,13 +742,7 @@ class JudgeWorker:
                     result = judged_results.get(case_cache_key, None)
 
                     if result is None:
-                        input_sha256 = answer_sha256 = None
-                        if self.submission.meta.get('review-evidence'):
-                            input_sha256 = hashlib.sha256(case.input_data()).hexdigest()
-                            answer_sha256 = hashlib.sha256(case.output_data()).hexdigest()
                         result = self.grader.grade(case)
-                        result.input_sha256 = input_sha256
-                        result.answer_sha256 = answer_sha256
                         if case.points != 0 and case_cache_key != (None, None):
                             judged_results[case_cache_key] = result
                     else:
@@ -764,8 +796,7 @@ class JudgeWorker:
                 yield IPC.BATCH_END, (batch_number,)
                 is_short_circuiting &= is_short_circuiting_enabled
 
-        output_artifact_sha256 = getattr(self.grader, 'output_artifact_sha256', None)
-        yield IPC.GRADING_END, (output_artifact_sha256,) if output_artifact_sha256 else ()
+        yield IPC.GRADING_END, ()
 
     def _do_abort(self) -> None:
         self._abort_requested = True
